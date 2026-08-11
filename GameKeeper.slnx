@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GameKeeper.App/GameKeeper.App.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/GameKeeper.App.UnitTests/GameKeeper.App.UnitTests.csproj" />
+  </Folder>
+</Solution>

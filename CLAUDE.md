@@ -10,5 +10,7 @@ Single-deployable application, developed solo.
 @.claude/rules/profiles/application-solo.md
 
 ## Project-specific notes
-- No source code yet — layout will follow `core/architecture.md`'s repo/solution
-  convention (`src/`, `test/`, a single `.slnx` at the root) once scaffolded.
+- Layout: `GameKeeper.slnx` at the root; app code in `src/GameKeeper.App/`,
+  tests in `test/GameKeeper.App.UnitTests/`.
+- Update `README.md` at the end of every milestone so it always documents the
+  feature surface that actually exists.
