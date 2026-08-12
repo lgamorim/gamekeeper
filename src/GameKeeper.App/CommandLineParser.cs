@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using GameKeeper.Core;
 
 namespace GameKeeper.App;
 
@@ -6,13 +7,14 @@ namespace GameKeeper.App;
 /// Parses the command line into a <see cref="CommandLineParseResult"/>. Supports the game and
 /// cloud folders as positional arguments, as named options (<c>--game</c>/<c>-g</c> and
 /// <c>--cloud</c>/<c>-c</c>, with either <c>--game value</c> or <c>--game=value</c> syntax),
-/// or a mix of the two.
+/// or a mix of the two, plus <c>--mode</c>/<c>-m</c> for the sync direction.
 /// </summary>
 public static class CommandLineParser
 {
     private static readonly string[] HelpFlags = ["--help", "-h", "/?"];
     private static readonly string[] GameNames = ["--game", "-g"];
     private static readonly string[] CloudNames = ["--cloud", "-c"];
+    private static readonly string[] ModeNames = ["--mode", "-m"];
     private const string VersionFlag = "--version";
 
     /// <summary>Parses the supplied command-line arguments.</summary>
@@ -36,6 +38,7 @@ public static class CommandLineParser
 
         string? game = null;
         string? cloud = null;
+        SyncMode? mode = null;
         var positionals = new List<string>();
 
         for (int i = 0; i < args.Length; i++)
@@ -70,6 +73,26 @@ public static class CommandLineParser
 
                 cloud = value;
             }
+            else if (TryMatchOption(token, ModeNames, out string? inlineMode))
+            {
+                if (!TryResolveValue("--mode", inlineMode, args, ref i, out string? value, out string? error))
+                {
+                    return CommandLineParseResult.Failure(error);
+                }
+
+                if (mode is not null)
+                {
+                    return CommandLineParseResult.Failure("The sync mode was specified more than once.");
+                }
+
+                if (!TryParseMode(value, out SyncMode parsedMode))
+                {
+                    return CommandLineParseResult.Failure(
+                        $"Unknown sync mode: {value}. Expected 'both', 'up', or 'down'.");
+                }
+
+                mode = parsedMode;
+            }
             else if (token.StartsWith('-'))
             {
                 return CommandLineParseResult.Failure($"Unknown option: {token}");
@@ -80,10 +103,14 @@ public static class CommandLineParser
             }
         }
 
-        return Resolve(game, cloud, positionals);
+        return Resolve(game, cloud, mode, positionals);
     }
 
-    private static CommandLineParseResult Resolve(string? game, string? cloud, List<string> positionals)
+    private static CommandLineParseResult Resolve(
+        string? game,
+        string? cloud,
+        SyncMode? mode,
+        List<string> positionals)
     {
         // Positionals fill whichever folder a named option did not already set, game first.
         foreach (string positional in positionals)
@@ -107,7 +134,26 @@ public static class CommandLineParser
             return CommandLineParseResult.Failure("Both a game folder and a cloud folder are required.");
         }
 
-        return CommandLineParseResult.Success(game, cloud);
+        return CommandLineParseResult.Success(game, cloud, mode ?? SyncMode.Bidirectional);
+    }
+
+    private static bool TryParseMode(string value, out SyncMode mode)
+    {
+        switch (value.ToLowerInvariant())
+        {
+            case "both":
+                mode = SyncMode.Bidirectional;
+                return true;
+            case "up":
+                mode = SyncMode.FirstToSecond;
+                return true;
+            case "down":
+                mode = SyncMode.SecondToFirst;
+                return true;
+            default:
+                mode = SyncMode.Bidirectional;
+                return false;
+        }
     }
 
     private static bool TryMatchOption(string token, string[] names, out string? inlineValue)

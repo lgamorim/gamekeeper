@@ -1,3 +1,5 @@
+using GameKeeper.Core;
+
 namespace GameKeeper.App;
 
 /// <summary>
@@ -13,6 +15,9 @@ public sealed record CommandLineParseResult
 
     /// <summary>The resolved cloud folder, or <see langword="null"/>.</summary>
     public string? CloudFolder { get; init; }
+
+    /// <summary>The requested sync direction; two-way unless <c>--mode</c> says otherwise.</summary>
+    public SyncMode Mode { get; init; } = SyncMode.Bidirectional;
 
     /// <summary>Whether a help flag was supplied.</summary>
     public bool HelpRequested { get; init; }
@@ -38,11 +43,12 @@ public sealed record CommandLineParseResult
     public static CommandLineParseResult Failure(string message) =>
         new() { ErrorMessage = message };
 
-    /// <summary>Creates a successful result carrying the resolved folders.</summary>
-    public static CommandLineParseResult Success(string gameFolder, string cloudFolder) =>
+    /// <summary>Creates a successful result carrying the resolved folders and sync mode.</summary>
+    public static CommandLineParseResult Success(string gameFolder, string cloudFolder, SyncMode mode) =>
         new()
         {
             GameFolder = gameFolder,
             CloudFolder = cloudFolder,
+            Mode = mode,
         };
 }

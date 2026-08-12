@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\GameKeeper.App\GameKeeper.App.csproj" />
+    <ProjectReference Include="..\..\src\GameKeeper.Core\GameKeeper.Core.csproj" />
   </ItemGroup>
 
 </Project>

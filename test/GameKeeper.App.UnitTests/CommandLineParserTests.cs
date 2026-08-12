@@ -1,3 +1,4 @@
+using GameKeeper.Core;
 using Xunit;
 
 namespace GameKeeper.App.UnitTests;
@@ -172,5 +173,72 @@ public sealed class CommandLineParserTests
         CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud"]);
 
         Assert.False(result.VersionRequested);
+    }
+
+    [Fact]
+    public void Should_DefaultToTwoWayMode_When_ModeOptionAbsent()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud"]);
+
+        Assert.False(result.HasError);
+        Assert.Equal(SyncMode.Bidirectional, result.Mode);
+    }
+
+    [Theory]
+    [InlineData("both", SyncMode.Bidirectional)]
+    [InlineData("up", SyncMode.FirstToSecond)]
+    [InlineData("down", SyncMode.SecondToFirst)]
+    [InlineData("BOTH", SyncMode.Bidirectional)]
+    [InlineData("UP", SyncMode.FirstToSecond)]
+    [InlineData("Down", SyncMode.SecondToFirst)]
+    public void Should_MapModeValue_When_ModeOptionGiven(string value, SyncMode expected)
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", "--mode", value]);
+
+        Assert.False(result.HasError);
+        Assert.Equal(expected, result.Mode);
+    }
+
+    [Theory]
+    [InlineData("-m", "up")]
+    [InlineData("--mode=up")]
+    public void Should_MapModeValue_When_AliasOrInlineSyntaxUsed(params string[] modeArgs)
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", .. modeArgs]);
+
+        Assert.False(result.HasError);
+        Assert.Equal(SyncMode.FirstToSecond, result.Mode);
+    }
+
+    [Fact]
+    public void Should_Fail_When_ModeValueIsUnknown()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", "--mode", "sideways"]);
+
+        Assert.True(result.HasError);
+        Assert.Contains("Unknown sync mode: sideways", result.ErrorMessage);
+        Assert.Contains("'both', 'up', or 'down'", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void Should_Fail_When_ModeSpecifiedTwice()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse(
+            [@"C:\game", @"C:\cloud", "--mode", "up", "-m", "down"]);
+
+        Assert.True(result.HasError);
+        Assert.Contains("sync mode was specified more than once", result.ErrorMessage);
+    }
+
+    [Theory]
+    [InlineData(@"C:\game", @"C:\cloud", "--mode")]
+    [InlineData(@"C:\game", @"C:\cloud", "--mode=")]
+    [InlineData("--mode", "--game", @"C:\game")]
+    public void Should_Fail_When_ModeValueIsMissing(params string[] args)
+    {
+        CommandLineParseResult result = CommandLineParser.Parse(args);
+
+        Assert.True(result.HasError);
+        Assert.Contains("Missing value for --mode", result.ErrorMessage);
     }
 }

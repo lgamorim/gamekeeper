@@ -1,35 +1,44 @@
 using System.IO.Abstractions;
+using GameKeeper.Core;
 
 namespace GameKeeper.App;
 
 /// <summary>
-/// The console host: parses command-line arguments, validates the folders, and reports the
-/// outcome. Kept free of static <c>Console</c> calls so it can be unit tested.
+/// The console host: parses command-line arguments, validates the folders, runs the sync, and
+/// reports the outcome. Kept free of static <c>Console</c> calls so it can be unit tested.
 /// </summary>
 public sealed class Application
 {
     /// <summary>Exit code returned on a successful run.</summary>
     public const int SuccessExitCode = 0;
 
-    /// <summary>Exit code returned when synchronization could not be attempted.</summary>
+    /// <summary>Exit code returned when synchronization could not be attempted or completed.</summary>
     public const int ErrorExitCode = 1;
 
     /// <summary>Exit code returned for invalid usage (bad arguments or <c>--help</c>).</summary>
     public const int UsageExitCode = 2;
 
+    private readonly IFolderSynchronizer _synchronizer;
     private readonly IFileSystem _fileSystem;
     private readonly TextWriter _output;
     private readonly TextWriter _error;
 
     /// <summary>Initializes a new instance.</summary>
+    /// <param name="synchronizer">The engine that syncs the two folders.</param>
     /// <param name="fileSystem">The file system used to validate the supplied folders.</param>
     /// <param name="output">Where normal output is written.</param>
     /// <param name="error">Where error and usage messages are written.</param>
-    public Application(IFileSystem fileSystem, TextWriter output, TextWriter error)
+    public Application(
+        IFolderSynchronizer synchronizer,
+        IFileSystem fileSystem,
+        TextWriter output,
+        TextWriter error)
     {
+        ArgumentNullException.ThrowIfNull(synchronizer);
         ArgumentNullException.ThrowIfNull(fileSystem);
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(error);
+        _synchronizer = synchronizer;
         _fileSystem = fileSystem;
         _output = output;
         _error = error;
@@ -63,12 +72,14 @@ public sealed class Application
             return UsageExitCode;
         }
 
+        var options = new SyncOptions { Mode = parsed.Mode };
+
         // A successful parse always resolves both folders (guaranteed by
         // CommandLineParseResult.Success), so neither is null at this point.
-        return RunSync(parsed.GameFolder!, parsed.CloudFolder!);
+        return RunSync(parsed.GameFolder!, parsed.CloudFolder!, options);
     }
 
-    private int RunSync(string gameFolder, string cloudFolder)
+    private int RunSync(string gameFolder, string cloudFolder, SyncOptions options)
     {
         if (!_fileSystem.Directory.Exists(gameFolder))
         {
@@ -76,27 +87,64 @@ public sealed class Application
             return ErrorExitCode;
         }
 
-        // The CLI surface ships ahead of the engine, so a valid run resolves the folders and
-        // stops; nothing on disk is touched until the sync engine lands.
-        _output.WriteLine($"Would synchronize '{gameFolder}' <-> '{cloudFolder}'.");
-        _output.WriteLine("The sync engine is not implemented yet, so no files were changed.");
-        return SuccessExitCode;
+        // The cloud folder may not exist yet on a brand-new machine; creating it is the
+        // natural first step of the sync rather than an error.
+        _fileSystem.Directory.CreateDirectory(cloudFolder);
+
+        try
+        {
+            SyncResult result = _synchronizer.Synchronize(gameFolder, cloudFolder, options);
+            WriteSummary(gameFolder, cloudFolder, options.Mode, result);
+            return SuccessExitCode;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _error.WriteLine($"Sync failed: {ex.Message}");
+            _error.WriteLine("No sync state was recorded, so it is safe to run again once the "
+                + "cause is resolved (for example, after closing the game).");
+            return ErrorExitCode;
+        }
     }
+
+    private void WriteSummary(string gameFolder, string cloudFolder, SyncMode mode, SyncResult result)
+    {
+        _output.WriteLine($"Synchronized '{gameFolder}' {DirectionArrow(mode)} '{cloudFolder}'.");
+        _output.WriteLine($"  Copied to cloud: {result.CopiedToSecond}");
+        _output.WriteLine($"  Copied to game:  {result.CopiedToFirst}");
+        _output.WriteLine($"  Already in sync: {result.UpToDate}");
+
+        // Only one-way runs can hold files back, so the line would be noise elsewhere.
+        if (mode != SyncMode.Bidirectional)
+        {
+            _output.WriteLine($"  Skipped (one-way): {result.Skipped}");
+        }
+    }
+
+    private static string DirectionArrow(SyncMode mode) => mode switch
+    {
+        SyncMode.FirstToSecond => "->",
+        SyncMode.SecondToFirst => "<-",
+        _ => "<->",
+    };
 
     private static void WriteUsage(TextWriter writer)
     {
         writer.WriteLine("GameKeeper - two-way sync for game save folders.");
         writer.WriteLine();
         writer.WriteLine("Usage:");
-        writer.WriteLine("  GameKeeper <gameFolder> <cloudFolder>");
-        writer.WriteLine("  GameKeeper --game <gameFolder> --cloud <cloudFolder>");
+        writer.WriteLine("  GameKeeper <gameFolder> <cloudFolder> [--mode <both|up|down>]");
+        writer.WriteLine("  GameKeeper --game <gameFolder> --cloud <cloudFolder> [--mode <both|up|down>]");
         writer.WriteLine();
         writer.WriteLine("Options:");
-        writer.WriteLine("  -g, --game <path>    The local game folder.");
-        writer.WriteLine("  -c, --cloud <path>   The shared cloud folder.");
-        writer.WriteLine("      --version        Show the version, then exit.");
-        writer.WriteLine("  -h, --help           Show this help.");
+        writer.WriteLine("  -g, --game <path>         The local game folder.");
+        writer.WriteLine("  -c, --cloud <path>        The shared cloud folder.");
+        writer.WriteLine("  -m, --mode <both|up|down> Sync direction: both (default, two-way),");
+        writer.WriteLine("                            up (game -> cloud), down (cloud -> game).");
+        writer.WriteLine("      --version             Show the version, then exit.");
+        writer.WriteLine("  -h, --help                Show this help.");
         writer.WriteLine();
         writer.WriteLine("The folders may be given positionally or by option, in any order.");
+        writer.WriteLine("The newer copy of each file wins. Nothing is ever deleted: a file");
+        writer.WriteLine("missing on one side is copied back from the other.");
     }
 }

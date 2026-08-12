@@ -8,4 +8,8 @@
     <PackageReference Include="System.IO.Abstractions" Version="22.1.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\GameKeeper.Core\GameKeeper.Core.csproj" />
+  </ItemGroup>
+
 </Project>
