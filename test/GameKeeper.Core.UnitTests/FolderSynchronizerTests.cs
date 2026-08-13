@@ -142,6 +142,7 @@ public sealed class FolderSynchronizerTests
 
         Assert.Equal("GAME-IS-LONGER", fileSystem.File.ReadAllText(@"C:\cloud\save.dat"));
         Assert.Equal(1, result.CopiedToSecond);
+        Assert.Equal(1, result.Conflicts);
         Assert.Equal(0, result.UpToDate);
     }
 
@@ -447,6 +448,23 @@ public sealed class FolderSynchronizerTests
 
         Assert.Equal("GAME-IS-LONGER", fileSystem.File.ReadAllText(@"C:\cloud\save.dat"));
         Assert.Equal(1, result.CopiedToSecond);
+        Assert.Equal(1, result.Conflicts);
+    }
+
+    [Fact]
+    public void Should_NotFlagAConflict_When_OneWaySkipsANewerDestination()
+    {
+        // A skip is a refusal to act, not a resolution: nothing was chosen over anything.
+        var fileSystem = new MockFileSystem();
+        WriteFile(fileSystem, @"C:\game\save.dat", "old", Older);
+        WriteFile(fileSystem, @"C:\cloud\save.dat", "newer", Newer);
+        var synchronizer = CreateSynchronizer(fileSystem);
+
+        SyncResult result = synchronizer.Synchronize(
+            GameRoot, CloudRoot, new SyncOptions { Mode = SyncMode.FirstToSecond });
+
+        Assert.Equal(1, result.Skipped);
+        Assert.Equal(0, result.Conflicts);
     }
 
     private static FolderSynchronizer CreateSynchronizer(MockFileSystem fileSystem)

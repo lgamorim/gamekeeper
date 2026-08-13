@@ -4,8 +4,9 @@ namespace GameKeeper.Core;
 
 /// <summary>
 /// Synchronizes two folders by comparing each file's last write time and size against the
-/// baseline recorded on the previous run. The newer copy wins; nothing is ever deleted, so a
-/// file missing on one side is restored from the other.
+/// baseline recorded on the previous run. The newer copy wins. By default nothing is deleted -
+/// a file missing on one side is restored from the other - unless deletions are explicitly
+/// propagated, and even then an edit always outlives a delete.
 /// </summary>
 public sealed class FolderSynchronizer : IFolderSynchronizer
 {
@@ -79,7 +80,7 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
             // A path gone from both sides produces no row at all; everything else is reported.
             if (outcome.Action != SyncAction.None || outcome.Entry is not null)
             {
-                outcomes.Add(new SyncedFile(relativePath, outcome.Action));
+                outcomes.Add(new SyncedFile(relativePath, outcome.Action, outcome.Conflict));
             }
         }
 
@@ -114,17 +115,26 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
             (Change.Unchanged, Change.Modified) =>
                 CopyOutcome(second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst),
 
-            // Deletions are not propagated: the sync is additive, so a file missing on one
-            // side is restored from the surviving copy, and an edit always outlives a delete.
-            (Change.Deleted, Change.Unchanged or Change.Modified) =>
-                CopyOutcome(second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst),
-            (Change.Unchanged or Change.Modified, Change.Deleted) =>
-                CopyOutcome(first!.Value, relativePath, secondRoot, SyncAction.CopiedToSecond),
+            // Delete versus unchanged: propagate the deletion when asked to; otherwise the
+            // sync stays additive and the survivor resurrects the file.
+            (Change.Deleted, Change.Unchanged) => options.PropagateDeletions
+                ? DeleteOutcome(second!.Value.FullPath, SyncAction.DeletedFromSecond)
+                : CopyOutcome(second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst),
+            (Change.Unchanged, Change.Deleted) => options.PropagateDeletions
+                ? DeleteOutcome(first!.Value.FullPath, SyncAction.DeletedFromFirst)
+                : CopyOutcome(first!.Value, relativePath, secondRoot, SyncAction.CopiedToSecond),
 
-            (Change.Unchanged, Change.Unchanged) => new Reconciliation(SyncAction.None, baseEntry),
+            // Edit versus delete: an edit is never lost to a delete, even with deletions on;
+            // choosing the edit over the delete is a conflict resolution worth flagging.
+            (Change.Modified, Change.Deleted) =>
+                CopyOutcome(first!.Value, relativePath, secondRoot, SyncAction.CopiedToSecond, conflict: true),
+            (Change.Deleted, Change.Modified) =>
+                CopyOutcome(second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst, conflict: true),
+
+            (Change.Unchanged, Change.Unchanged) => new Reconciliation(SyncAction.None, false, baseEntry),
 
             // Both absent or both deleted: the path simply ages out of the baseline.
-            _ => new Reconciliation(SyncAction.None, null),
+            _ => new Reconciliation(SyncAction.None, false, null),
         };
     }
 
@@ -141,13 +151,15 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
         {
             // Same moment, same size: treated as the same file. Content is never read - the
             // baseline exists precisely so routine cases stay this cheap.
-            return new Reconciliation(SyncAction.None, StateOf(relativePath, first));
+            return new Reconciliation(SyncAction.None, false, StateOf(relativePath, first));
         }
 
-        // The raw timestamps pick the winner; an exact tie goes to the first (game) folder.
+        // A genuine conflict: both copies exist and differ. The raw timestamps pick the
+        // winner; an exact tie goes to the first (game) folder, since size says nothing
+        // about recency.
         return first.LastWriteTimeUtc >= second.LastWriteTimeUtc
-            ? CopyOutcome(first, relativePath, secondRoot, SyncAction.CopiedToSecond)
-            : CopyOutcome(second, relativePath, firstRoot, SyncAction.CopiedToFirst);
+            ? CopyOutcome(first, relativePath, secondRoot, SyncAction.CopiedToSecond, conflict: true)
+            : CopyOutcome(second, relativePath, firstRoot, SyncAction.CopiedToFirst, conflict: true);
     }
 
     private Reconciliation ReconcileOneWay(
@@ -164,14 +176,22 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
         LiveFile? destination = up ? second : first;
         string destinationRoot = up ? secondRoot : firstRoot;
         SyncAction copyAction = up ? SyncAction.CopiedToSecond : SyncAction.CopiedToFirst;
+        SyncAction deleteAction = up ? SyncAction.DeletedFromSecond : SyncAction.DeletedFromFirst;
 
         if (source is not { } sourceFile)
         {
-            // Nothing to push. A destination-only file is left alone but reported, so the run
-            // does not pretend the pair is in sync.
+            // Source absent. If the baseline had it, the source side deleted it and the
+            // deletion may propagate; otherwise a destination-only file is outside the
+            // source's authority and is left alone but reported, so the run does not
+            // pretend the pair is in sync.
+            if (baseEntry is not null && destination is { } deletedDestination && options.PropagateDeletions)
+            {
+                return DeleteOutcome(deletedDestination.FullPath, deleteAction);
+            }
+
             return destination is not null
-                ? new Reconciliation(SyncAction.Skipped, baseEntry)
-                : new Reconciliation(SyncAction.None, null);
+                ? new Reconciliation(SyncAction.Skipped, false, baseEntry)
+                : new Reconciliation(SyncAction.None, false, null);
         }
 
         if (destination is not { } destinationFile)
@@ -181,11 +201,12 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
 
         if (WithinTolerance(sourceFile.LastWriteTimeUtc, destinationFile.LastWriteTimeUtc, options.TimestampTolerance))
         {
-            // Same moment: same size means in sync; a size mismatch means the copies diverged
-            // and the source is authoritative in a one-way run.
+            // Same moment: same size means in sync; a size mismatch means the copies
+            // diverged. The source is authoritative in a one-way run, but the timestamps
+            // cannot justify the overwrite, so it is flagged as a conflict.
             return sourceFile.Length == destinationFile.Length
-                ? new Reconciliation(SyncAction.None, StateOf(relativePath, sourceFile))
-                : CopyOutcome(sourceFile, relativePath, destinationRoot, copyAction);
+                ? new Reconciliation(SyncAction.None, false, StateOf(relativePath, sourceFile))
+                : CopyOutcome(sourceFile, relativePath, destinationRoot, copyAction, conflict: true);
         }
 
         if (destinationFile.LastWriteTimeUtc >= sourceFile.LastWriteTimeUtc)
@@ -193,7 +214,7 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
             // The destination is newer but this direction may not touch the source, so the
             // pair stays out of sync - reported as skipped rather than blending into
             // up to date. The baseline still records the source's view of the file.
-            return new Reconciliation(SyncAction.Skipped, StateOf(relativePath, sourceFile));
+            return new Reconciliation(SyncAction.Skipped, false, StateOf(relativePath, sourceFile));
         }
 
         return CopyOutcome(sourceFile, relativePath, destinationRoot, copyAction);
@@ -226,12 +247,26 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
         return new FileState(relativePath, file.LastWriteTimeUtc, file.Length);
     }
 
-    private Reconciliation CopyOutcome(LiveFile source, string relativePath, string destinationRoot, SyncAction action)
+    private Reconciliation CopyOutcome(
+        LiveFile source,
+        string relativePath,
+        string destinationRoot,
+        SyncAction action,
+        bool conflict = false)
     {
         CopyFile(source.FullPath, _fileSystem.Path.Combine(destinationRoot, relativePath));
 
         // The copy preserves the source's timestamp, so its live state describes both sides.
-        return new Reconciliation(action, StateOf(relativePath, source));
+        return new Reconciliation(action, conflict, StateOf(relativePath, source));
+    }
+
+    private Reconciliation DeleteOutcome(string fullPath, SyncAction action)
+    {
+        _fileSystem.File.Delete(fullPath);
+
+        // A propagated deletion is never a conflict, and the path drops out of the baseline
+        // because it no longer exists anywhere.
+        return new Reconciliation(action, false, null);
     }
 
     private void CopyFile(string sourcePath, string destinationPath)
@@ -350,7 +385,7 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
     }
 
     /// <summary>One path's outcome: what was done and what the new baseline records for it.</summary>
-    private readonly record struct Reconciliation(SyncAction Action, FileState? Entry);
+    private readonly record struct Reconciliation(SyncAction Action, bool Conflict, FileState? Entry);
 
     private LiveFile? LiveFileAt(Dictionary<string, string> files, string relativePath)
     {

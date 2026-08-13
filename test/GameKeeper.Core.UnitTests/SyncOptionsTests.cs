@@ -12,4 +12,10 @@ public sealed class SyncOptionsTests
         Assert.Equal(SyncMode.Bidirectional, options.Mode);
         Assert.Equal(TimeSpan.FromSeconds(2), options.TimestampTolerance);
     }
+
+    [Fact]
+    public void Should_KeepDeletionsOff_When_Defaulted()
+    {
+        Assert.False(SyncOptions.Default.PropagateDeletions);
+    }
 }

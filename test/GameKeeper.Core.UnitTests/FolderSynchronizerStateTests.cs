@@ -48,6 +48,62 @@ public sealed class FolderSynchronizerStateTests
 
         Assert.Equal("progress", fileSystem.File.ReadAllText(@"C:\game\save.dat"));
         Assert.Equal(1, result.CopiedToFirst);
+        Assert.Equal(0, result.DeletedFromSecond);
+    }
+
+    [Fact]
+    public void Should_DeleteTheCloudCopy_When_GameDeletedItAndDeletionsAreOn()
+    {
+        var fileSystem = new MockFileSystem();
+        WriteFile(fileSystem, @"C:\game\save.dat", "keep-me", T1);
+        fileSystem.AddDirectory(CloudRoot);
+        var synchronizer = CreateSynchronizer(fileSystem);
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        fileSystem.File.Delete(@"C:\game\save.dat");
+        SyncResult result = synchronizer.Synchronize(
+            GameRoot, CloudRoot, new SyncOptions { PropagateDeletions = true });
+
+        Assert.False(fileSystem.File.Exists(@"C:\cloud\save.dat"));
+        Assert.Equal(1, result.DeletedFromSecond);
+        Assert.Equal(0, result.Conflicts);
+    }
+
+    [Fact]
+    public void Should_DeleteTheGameCopy_When_CloudDeletedItAndDeletionsAreOn()
+    {
+        var fileSystem = new MockFileSystem();
+        WriteFile(fileSystem, @"C:\game\save.dat", "keep-me", T1);
+        fileSystem.AddDirectory(CloudRoot);
+        var synchronizer = CreateSynchronizer(fileSystem);
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        fileSystem.File.Delete(@"C:\cloud\save.dat");
+        SyncResult result = synchronizer.Synchronize(
+            GameRoot, CloudRoot, new SyncOptions { PropagateDeletions = true });
+
+        Assert.False(fileSystem.File.Exists(@"C:\game\save.dat"));
+        Assert.Equal(1, result.DeletedFromFirst);
+        Assert.Equal(0, result.DeletedFromSecond);
+    }
+
+    [Fact]
+    public void Should_ForgetThePath_When_ADeletionWasPropagated()
+    {
+        // Once propagated, the file must not reappear or be re-deleted on the next run.
+        var fileSystem = new MockFileSystem();
+        WriteFile(fileSystem, @"C:\game\save.dat", "keep-me", T1);
+        fileSystem.AddDirectory(CloudRoot);
+        var synchronizer = CreateSynchronizer(fileSystem);
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        fileSystem.File.Delete(@"C:\game\save.dat");
+        synchronizer.Synchronize(GameRoot, CloudRoot, new SyncOptions { PropagateDeletions = true });
+        SyncResult third = synchronizer.Synchronize(GameRoot, CloudRoot, new SyncOptions { PropagateDeletions = true });
+
+        Assert.Empty(third.Files);
+        Assert.False(fileSystem.File.Exists(@"C:\game\save.dat"));
+        Assert.False(fileSystem.File.Exists(@"C:\cloud\save.dat"));
     }
 
     [Fact]
@@ -98,6 +154,7 @@ public sealed class FolderSynchronizerStateTests
 
         Assert.Equal("GAME-WINS", fileSystem.File.ReadAllText(@"C:\cloud\save.dat"));
         Assert.Equal(1, result.CopiedToSecond);
+        Assert.Equal(1, result.Conflicts);
     }
 
     [Fact]
@@ -115,6 +172,7 @@ public sealed class FolderSynchronizerStateTests
 
         Assert.Equal("GAME-IS-LONGER", fileSystem.File.ReadAllText(@"C:\cloud\save.dat"));
         Assert.Equal(1, result.CopiedToSecond);
+        Assert.Equal(1, result.Conflicts);
     }
 
     [Fact]
@@ -132,14 +190,18 @@ public sealed class FolderSynchronizerStateTests
 
         Assert.Equal("GAME-IS-LONGER", fileSystem.File.ReadAllText(@"C:\cloud\save.dat"));
         Assert.Equal(1, first.CopiedToSecond);
+        Assert.Equal(1, first.Conflicts);
         Assert.Equal(0, second.CopiedToFirst);
         Assert.Equal(0, second.CopiedToSecond);
+        Assert.Equal(0, second.Conflicts);
         Assert.Equal(1, second.UpToDate);
     }
 
     [Fact]
     public void Should_KeepTheEdit_When_TheOtherSideDeletedTheFile()
     {
+        // Even with deletions on, an edit is never lost to a delete - but resolving the
+        // collision that way is flagged as a conflict.
         var fileSystem = new MockFileSystem();
         WriteFile(fileSystem, @"C:\game\save.dat", "orig", T1);
         fileSystem.AddDirectory(CloudRoot);
@@ -148,10 +210,13 @@ public sealed class FolderSynchronizerStateTests
 
         WriteFile(fileSystem, @"C:\game\save.dat", "edited", T2);
         fileSystem.File.Delete(@"C:\cloud\save.dat");
-        SyncResult result = synchronizer.Synchronize(GameRoot, CloudRoot);
+        SyncResult result = synchronizer.Synchronize(
+            GameRoot, CloudRoot, new SyncOptions { PropagateDeletions = true });
 
         Assert.Equal("edited", fileSystem.File.ReadAllText(@"C:\cloud\save.dat"));
         Assert.Equal(1, result.CopiedToSecond);
+        Assert.Equal(1, result.Conflicts);
+        Assert.Equal(0, result.DeletedFromFirst);
     }
 
     [Fact]
@@ -165,11 +230,53 @@ public sealed class FolderSynchronizerStateTests
 
         fileSystem.File.Delete(@"C:\game\save.dat");
         fileSystem.File.Delete(@"C:\cloud\save.dat");
-        SyncResult result = synchronizer.Synchronize(GameRoot, CloudRoot);
+        SyncResult result = synchronizer.Synchronize(
+            GameRoot, CloudRoot, new SyncOptions { PropagateDeletions = true });
 
         Assert.Empty(result.Files);
+        Assert.Equal(0, result.DeletedFromFirst);
+        Assert.Equal(0, result.DeletedFromSecond);
         Assert.False(fileSystem.File.Exists(@"C:\game\save.dat"));
         Assert.False(fileSystem.File.Exists(@"C:\cloud\save.dat"));
+    }
+
+    [Fact]
+    public void Should_OnlyDeleteFromTheCloud_When_ModeIsUpAndDeletionsAreOn()
+    {
+        var fileSystem = new MockFileSystem();
+        WriteFile(fileSystem, @"C:\game\keep.dat", "keep", T1);
+        WriteFile(fileSystem, @"C:\game\gone.dat", "gone", T1);
+        var synchronizer = CreateSynchronizer(fileSystem);
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        fileSystem.File.Delete(@"C:\game\gone.dat");
+        SyncResult result = synchronizer.Synchronize(
+            GameRoot, CloudRoot,
+            new SyncOptions { Mode = SyncMode.FirstToSecond, PropagateDeletions = true });
+
+        Assert.False(fileSystem.File.Exists(@"C:\cloud\gone.dat"));
+        Assert.True(fileSystem.File.Exists(@"C:\cloud\keep.dat"));
+        Assert.Equal(1, result.DeletedFromSecond);
+        Assert.Equal(0, result.DeletedFromFirst);
+    }
+
+    [Fact]
+    public void Should_NotDeleteAnything_When_ModeIsUpAndDeletionsAreOff()
+    {
+        // One-way with deletions off leaves the orphaned destination file alone, reported as
+        // skipped: it is out of the source's authority, not deleted.
+        var fileSystem = new MockFileSystem();
+        WriteFile(fileSystem, @"C:\game\gone.dat", "gone", T1);
+        var synchronizer = CreateSynchronizer(fileSystem);
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        fileSystem.File.Delete(@"C:\game\gone.dat");
+        SyncResult result = synchronizer.Synchronize(
+            GameRoot, CloudRoot, new SyncOptions { Mode = SyncMode.FirstToSecond });
+
+        Assert.True(fileSystem.File.Exists(@"C:\cloud\gone.dat"));
+        Assert.Equal(0, result.DeletedFromSecond);
+        Assert.Equal(1, result.Skipped);
     }
 
     private static FolderSynchronizer CreateSynchronizer(MockFileSystem fileSystem)

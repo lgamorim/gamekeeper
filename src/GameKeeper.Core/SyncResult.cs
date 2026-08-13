@@ -22,6 +22,15 @@ public sealed class SyncResult
     /// <summary>How many files were copied into the first folder.</summary>
     public int CopiedToFirst => Files.Count(f => f.Action == SyncAction.CopiedToFirst);
 
+    /// <summary>How many files were deleted from the second folder.</summary>
+    public int DeletedFromSecond => Files.Count(f => f.Action == SyncAction.DeletedFromSecond);
+
+    /// <summary>How many files were deleted from the first folder.</summary>
+    public int DeletedFromFirst => Files.Count(f => f.Action == SyncAction.DeletedFromFirst);
+
+    /// <summary>How many files' sync resolved a conflict, whatever the resolving action.</summary>
+    public int Conflicts => Files.Count(f => f.Conflict);
+
     /// <summary>How many files were already in sync.</summary>
     public int UpToDate => Files.Count(f => f.Action == SyncAction.None);
 

@@ -241,4 +241,33 @@ public sealed class CommandLineParserTests
         Assert.True(result.HasError);
         Assert.Contains("Missing value for --mode", result.ErrorMessage);
     }
+
+    [Fact]
+    public void Should_LeaveDeletionsOff_When_DeleteFlagAbsent()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud"]);
+
+        Assert.False(result.HasError);
+        Assert.False(result.PropagateDeletions);
+    }
+
+    [Fact]
+    public void Should_EnableDeletionPropagation_When_DeleteFlagGiven()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", "--delete"]);
+
+        Assert.False(result.HasError);
+        Assert.True(result.PropagateDeletions);
+    }
+
+    [Fact]
+    public void Should_CombineFlagsAndNamedOptions_When_GivenTogether()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse(
+            ["--game", @"C:\game", "--cloud", @"C:\cloud", "--mode", "up", "--delete"]);
+
+        Assert.False(result.HasError);
+        Assert.Equal(SyncMode.FirstToSecond, result.Mode);
+        Assert.True(result.PropagateDeletions);
+    }
 }

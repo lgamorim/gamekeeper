@@ -163,6 +163,108 @@ public sealed class ApplicationTests
     }
 
     [Fact]
+    public void Should_ForwardDeletionPropagation_When_DeleteFlagIsGiven()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot, "--delete"]);
+
+        _synchronizer.Received(1).Synchronize(
+            GameRoot, CloudRoot, Arg.Is<SyncOptions>(o => o.PropagateDeletions));
+    }
+
+    [Fact]
+    public void Should_ReportDeletionAndConflictCounts_When_SummaryIsWritten()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        _synchronizer
+            .Synchronize(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<SyncOptions?>())
+            .Returns(new SyncResult(
+            [
+                new SyncedFile("a", SyncAction.DeletedFromSecond),
+                new SyncedFile("b", SyncAction.CopiedToSecond, Conflict: true),
+            ]));
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot]);
+
+        string output = _output.ToString();
+        Assert.Contains("Deleted from cloud: 1", output);
+        Assert.Contains("Conflicts: 1", output);
+    }
+
+    [Fact]
+    public void Should_NameDeletedFiles_When_SummaryIsWritten()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        _synchronizer
+            .Synchronize(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<SyncOptions?>())
+            .Returns(new SyncResult(
+            [
+                new SyncedFile(@"slots\gone.sav", SyncAction.DeletedFromSecond),
+                new SyncedFile("stale.sav", SyncAction.DeletedFromFirst),
+            ]));
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot]);
+
+        string output = _output.ToString();
+        Assert.Contains(@"slots\gone.sav", output);
+        Assert.Contains("stale.sav", output);
+    }
+
+    [Fact]
+    public void Should_NameConflictsAndTheWinningSide_When_SummaryIsWritten()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        _synchronizer
+            .Synchronize(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<SyncOptions?>())
+            .Returns(new SyncResult(
+            [
+                new SyncedFile("autosave.sav", SyncAction.CopiedToSecond, Conflict: true),
+                new SyncedFile("profile.cfg", SyncAction.CopiedToFirst, Conflict: true),
+            ]));
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot]);
+
+        string output = _output.ToString();
+        Assert.Contains("autosave.sav (kept the game copy)", output);
+        Assert.Contains("profile.cfg (kept the cloud copy)", output);
+    }
+
+    [Fact]
+    public void Should_NotNameRoutineCopies_When_SummaryIsWritten()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        _synchronizer
+            .Synchronize(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<SyncOptions?>())
+            .Returns(new SyncResult([new SyncedFile("save1.sav", SyncAction.CopiedToSecond)]));
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot]);
+
+        string output = _output.ToString();
+        Assert.DoesNotContain("save1.sav", output);
+        Assert.Contains("Copied to cloud: 1", output);
+    }
+
+    [Fact]
+    public void Should_NameNothing_When_EverythingIsUpToDate()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        _synchronizer
+            .Synchronize(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<SyncOptions?>())
+            .Returns(new SyncResult([new SyncedFile("save1.sav", SyncAction.None)]));
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot]);
+
+        Assert.DoesNotContain("save1.sav", _output.ToString());
+    }
+
+    [Fact]
     public void Should_CreateTheCloudFolder_When_ItDoesNotExist()
     {
         _fileSystem.AddDirectory(GameRoot);

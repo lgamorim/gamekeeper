@@ -13,6 +13,13 @@ public sealed record SyncOptions
     public SyncMode Mode { get; init; } = SyncMode.Bidirectional;
 
     /// <summary>
+    /// When <see langword="true"/>, a file removed from one side (relative to the last-synced
+    /// baseline) is deleted from the other side too. Defaults to <see langword="false"/> so the
+    /// default behavior stays additive and no save is ever lost by surprise.
+    /// </summary>
+    public bool PropagateDeletions { get; init; }
+
+    /// <summary>
     /// How far apart two last-write timestamps may be (inclusive) while still counting as the
     /// same moment. Absorbs file-system and cloud-client rounding; two seconds covers FAT's
     /// coarsest granularity.

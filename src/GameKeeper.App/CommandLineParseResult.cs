@@ -19,6 +19,9 @@ public sealed record CommandLineParseResult
     /// <summary>The requested sync direction; two-way unless <c>--mode</c> says otherwise.</summary>
     public SyncMode Mode { get; init; } = SyncMode.Bidirectional;
 
+    /// <summary>Whether <c>--delete</c> was supplied.</summary>
+    public bool PropagateDeletions { get; init; }
+
     /// <summary>Whether a help flag was supplied.</summary>
     public bool HelpRequested { get; init; }
 
@@ -43,12 +46,17 @@ public sealed record CommandLineParseResult
     public static CommandLineParseResult Failure(string message) =>
         new() { ErrorMessage = message };
 
-    /// <summary>Creates a successful result carrying the resolved folders and sync mode.</summary>
-    public static CommandLineParseResult Success(string gameFolder, string cloudFolder, SyncMode mode) =>
+    /// <summary>Creates a successful result carrying the resolved folders and sync settings.</summary>
+    public static CommandLineParseResult Success(
+        string gameFolder,
+        string cloudFolder,
+        SyncMode mode,
+        bool propagateDeletions) =>
         new()
         {
             GameFolder = gameFolder,
             CloudFolder = cloudFolder,
             Mode = mode,
+            PropagateDeletions = propagateDeletions,
         };
 }

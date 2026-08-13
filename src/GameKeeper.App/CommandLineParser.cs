@@ -16,6 +16,7 @@ public static class CommandLineParser
     private static readonly string[] CloudNames = ["--cloud", "-c"];
     private static readonly string[] ModeNames = ["--mode", "-m"];
     private const string VersionFlag = "--version";
+    private const string DeleteFlag = "--delete";
 
     /// <summary>Parses the supplied command-line arguments.</summary>
     /// <param name="args">The raw command-line arguments.</param>
@@ -39,6 +40,7 @@ public static class CommandLineParser
         string? game = null;
         string? cloud = null;
         SyncMode? mode = null;
+        bool propagateDeletions = false;
         var positionals = new List<string>();
 
         for (int i = 0; i < args.Length; i++)
@@ -93,6 +95,11 @@ public static class CommandLineParser
 
                 mode = parsedMode;
             }
+            else if (token.Equals(DeleteFlag, StringComparison.OrdinalIgnoreCase))
+            {
+                // A bare flag: repeating it is harmless, so no duplicate check.
+                propagateDeletions = true;
+            }
             else if (token.StartsWith('-'))
             {
                 return CommandLineParseResult.Failure($"Unknown option: {token}");
@@ -103,13 +110,14 @@ public static class CommandLineParser
             }
         }
 
-        return Resolve(game, cloud, mode, positionals);
+        return Resolve(game, cloud, mode, propagateDeletions, positionals);
     }
 
     private static CommandLineParseResult Resolve(
         string? game,
         string? cloud,
         SyncMode? mode,
+        bool propagateDeletions,
         List<string> positionals)
     {
         // Positionals fill whichever folder a named option did not already set, game first.
@@ -134,7 +142,7 @@ public static class CommandLineParser
             return CommandLineParseResult.Failure("Both a game folder and a cloud folder are required.");
         }
 
-        return CommandLineParseResult.Success(game, cloud, mode ?? SyncMode.Bidirectional);
+        return CommandLineParseResult.Success(game, cloud, mode ?? SyncMode.Bidirectional, propagateDeletions);
     }
 
     private static bool TryParseMode(string value, out SyncMode mode)

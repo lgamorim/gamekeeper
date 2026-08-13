@@ -12,6 +12,12 @@ public enum SyncAction
     /// <summary>The file was copied into the second folder.</summary>
     CopiedToSecond,
 
+    /// <summary>The file was deleted from the first folder.</summary>
+    DeletedFromFirst,
+
+    /// <summary>The file was deleted from the second folder.</summary>
+    DeletedFromSecond,
+
     /// <summary>
     /// The pair is out of sync, but the one-way mode forbids writing the side that needs the
     /// update, so nothing was copied.
