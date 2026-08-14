@@ -12,6 +12,7 @@ public sealed class FolderSynchronizerStateTests
     private const string GameRoot = @"C:\game";
     private const string CloudRoot = @"C:\cloud";
     private const string StateDir = @"C:\state";
+    private const string BackupsFolder = ".gamekeeper-backups";
 
     private static readonly DateTime T1 = new(2026, 1, 1, 9, 0, 0, DateTimeKind.Utc);
     private static readonly DateTime T2 = new(2026, 1, 1, 10, 0, 0, DateTimeKind.Utc);
@@ -67,6 +68,26 @@ public sealed class FolderSynchronizerStateTests
         Assert.False(fileSystem.File.Exists(@"C:\cloud\save.dat"));
         Assert.Equal(1, result.DeletedFromSecond);
         Assert.Equal(0, result.Conflicts);
+        Assert.Contains(fileSystem.AllFiles, f =>
+            IsBackup(f, CloudRoot) && fileSystem.File.ReadAllText(f) == "keep-me");
+    }
+
+    [Fact]
+    public void Should_StillDeleteWithoutBackingUp_When_BackupsAreDisabled()
+    {
+        var fileSystem = new MockFileSystem();
+        WriteFile(fileSystem, @"C:\game\save.dat", "keep-me", T1);
+        fileSystem.AddDirectory(CloudRoot);
+        var synchronizer = CreateSynchronizer(fileSystem);
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        fileSystem.File.Delete(@"C:\game\save.dat");
+        synchronizer.Synchronize(
+            GameRoot, CloudRoot,
+            new SyncOptions { PropagateDeletions = true, CreateBackups = false });
+
+        Assert.False(fileSystem.File.Exists(@"C:\cloud\save.dat"));
+        Assert.DoesNotContain(fileSystem.AllFiles, f => f.Contains(BackupsFolder));
     }
 
     [Fact]
@@ -155,6 +176,11 @@ public sealed class FolderSynchronizerStateTests
         Assert.Equal("GAME-WINS", fileSystem.File.ReadAllText(@"C:\cloud\save.dat"));
         Assert.Equal(1, result.CopiedToSecond);
         Assert.Equal(1, result.Conflicts);
+
+        // The losing cloud copy survives in the cloud folder's backups, stamped with its own
+        // last write time (T2), not the moment the backup was taken.
+        Assert.Equal("cloud-loses", fileSystem.File.ReadAllText(
+            @"C:\cloud\.gamekeeper-backups\save.dat.20260101100000.bak"));
     }
 
     [Fact]
@@ -173,6 +199,81 @@ public sealed class FolderSynchronizerStateTests
         Assert.Equal("GAME-IS-LONGER", fileSystem.File.ReadAllText(@"C:\cloud\save.dat"));
         Assert.Equal(1, result.CopiedToSecond);
         Assert.Equal(1, result.Conflicts);
+        Assert.Contains(fileSystem.AllFiles, f =>
+            IsBackup(f, CloudRoot) && fileSystem.File.ReadAllText(f) == "cloud");
+    }
+
+    [Fact]
+    public void Should_BackUpTheLoserOnItsOwnRoot_When_TheGameSideLosesAConflict()
+    {
+        var fileSystem = new MockFileSystem();
+        WriteFile(fileSystem, @"C:\game\save.dat", "orig", T1);
+        fileSystem.AddDirectory(CloudRoot);
+        var synchronizer = CreateSynchronizer(fileSystem);
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        WriteFile(fileSystem, @"C:\game\save.dat", "game-loses", T2);
+        WriteFile(fileSystem, @"C:\cloud\save.dat", "CLOUD-WINS", T3);
+        SyncResult result = synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        Assert.Equal("CLOUD-WINS", fileSystem.File.ReadAllText(@"C:\game\save.dat"));
+        Assert.Equal(1, result.Conflicts);
+        Assert.Contains(fileSystem.AllFiles, f =>
+            IsBackup(f, GameRoot) && fileSystem.File.ReadAllText(f) == "game-loses");
+        Assert.DoesNotContain(fileSystem.AllFiles, f => IsBackup(f, CloudRoot));
+    }
+
+    [Fact]
+    public void Should_CreateTheBackupSubfolder_When_TheConflictedFileIsNested()
+    {
+        var fileSystem = new MockFileSystem();
+        WriteFile(fileSystem, @"C:\game\slots\a.sav", "orig", T1);
+        fileSystem.AddDirectory(CloudRoot);
+        var synchronizer = CreateSynchronizer(fileSystem);
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        WriteFile(fileSystem, @"C:\game\slots\a.sav", "GAME-WINS", T3);
+        WriteFile(fileSystem, @"C:\cloud\slots\a.sav", "cloud-loses", T2);
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        Assert.Equal("cloud-loses", fileSystem.File.ReadAllText(
+            @"C:\cloud\.gamekeeper-backups\slots\a.sav.20260101100000.bak"));
+    }
+
+    [Fact]
+    public void Should_NotBackUp_When_TheOverwriteIsRoutine()
+    {
+        // Only conflicts and deletions destroy something the baseline cannot explain; a
+        // routine update of the unchanged side is the sync working as intended.
+        var fileSystem = new MockFileSystem();
+        WriteFile(fileSystem, @"C:\game\save.dat", "orig", T1);
+        fileSystem.AddDirectory(CloudRoot);
+        var synchronizer = CreateSynchronizer(fileSystem);
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        WriteFile(fileSystem, @"C:\game\save.dat", "updated", T2);
+        SyncResult result = synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        Assert.Equal(1, result.CopiedToSecond);
+        Assert.Equal(0, result.Conflicts);
+        Assert.DoesNotContain(fileSystem.AllFiles, f => f.Contains(BackupsFolder));
+    }
+
+    [Fact]
+    public void Should_BackUpTheCloudCopy_When_OneWayOverwritesASameTimeDivergence()
+    {
+        var fileSystem = new MockFileSystem();
+        WriteFile(fileSystem, @"C:\game\save.dat", "GAME-IS-LONGER", T1);
+        WriteFile(fileSystem, @"C:\cloud\save.dat", "cloud", T1.AddSeconds(1));
+        var synchronizer = CreateSynchronizer(fileSystem);
+
+        SyncResult result = synchronizer.Synchronize(
+            GameRoot, CloudRoot, new SyncOptions { Mode = SyncMode.FirstToSecond });
+
+        Assert.Equal("GAME-IS-LONGER", fileSystem.File.ReadAllText(@"C:\cloud\save.dat"));
+        Assert.Equal(1, result.Conflicts);
+        Assert.Contains(fileSystem.AllFiles, f =>
+            IsBackup(f, CloudRoot) && fileSystem.File.ReadAllText(f) == "cloud");
     }
 
     [Fact]
@@ -217,6 +318,9 @@ public sealed class FolderSynchronizerStateTests
         Assert.Equal(1, result.CopiedToSecond);
         Assert.Equal(1, result.Conflicts);
         Assert.Equal(0, result.DeletedFromFirst);
+
+        // The deleted side left nothing behind to preserve, so no backup is written.
+        Assert.DoesNotContain(fileSystem.AllFiles, f => f.Contains(BackupsFolder));
     }
 
     [Fact]
@@ -282,6 +386,12 @@ public sealed class FolderSynchronizerStateTests
     private static FolderSynchronizer CreateSynchronizer(MockFileSystem fileSystem)
     {
         return new FolderSynchronizer(fileSystem, new JsonSyncStateStore(fileSystem, StateDir));
+    }
+
+    private static bool IsBackup(string fullPath, string root)
+    {
+        return fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+            && fullPath.Contains(BackupsFolder);
     }
 
     private static void WriteFile(MockFileSystem fileSystem, string path, string content, DateTime lastWriteUtc)

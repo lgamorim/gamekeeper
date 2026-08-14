@@ -264,10 +264,117 @@ public sealed class CommandLineParserTests
     public void Should_CombineFlagsAndNamedOptions_When_GivenTogether()
     {
         CommandLineParseResult result = CommandLineParser.Parse(
-            ["--game", @"C:\game", "--cloud", @"C:\cloud", "--mode", "up", "--delete"]);
+            ["--game", @"C:\game", "--cloud", @"C:\cloud", "--mode", "up", "--delete", "--no-backup"]);
 
         Assert.False(result.HasError);
         Assert.Equal(SyncMode.FirstToSecond, result.Mode);
         Assert.True(result.PropagateDeletions);
+        Assert.False(result.CreateBackups);
+    }
+
+    [Fact]
+    public void Should_KeepBackupsOnAndForceOff_When_NoFlagsGiven()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud"]);
+
+        Assert.True(result.CreateBackups);
+        Assert.False(result.Force);
+    }
+
+    [Fact]
+    public void Should_DisableBackups_When_NoBackupFlagGiven()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", "--no-backup"]);
+
+        Assert.False(result.HasError);
+        Assert.False(result.CreateBackups);
+    }
+
+    [Fact]
+    public void Should_CaptureForce_When_ForceFlagGiven()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse(
+            [@"C:\game", @"C:\cloud", "--delete", "--force"]);
+
+        Assert.False(result.HasError);
+        Assert.True(result.Force);
+    }
+
+    [Fact]
+    public void Should_LeaveKeepBackupsUnset_When_OptionAbsent()
+    {
+        // Unset means "use the engine default" rather than a number duplicated in the parser.
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud"]);
+
+        Assert.False(result.HasError);
+        Assert.Null(result.KeepBackups);
+    }
+
+    [Theory]
+    [InlineData("--keep-backups", "3")]
+    [InlineData("--keep-backups=3")]
+    public void Should_CaptureKeepBackups_When_OptionGiven(params string[] keepArgs)
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", .. keepArgs]);
+
+        Assert.False(result.HasError);
+        Assert.Equal(3, result.KeepBackups);
+    }
+
+    [Fact]
+    public void Should_CaptureZeroKeepBackups_When_GivenInline()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", "--keep-backups=0"]);
+
+        Assert.False(result.HasError);
+        Assert.Equal(0, result.KeepBackups);
+    }
+
+    [Fact]
+    public void Should_Fail_When_KeepBackupsIsNegativeInline()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", "--keep-backups=-1"]);
+
+        Assert.True(result.HasError);
+        Assert.Contains("Invalid value for --keep-backups: -1", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void Should_Fail_When_KeepBackupsValueLooksLikeAnOption()
+    {
+        // The lookahead treats a following token starting with '-' as a missing value, so a
+        // space-separated negative number lands here rather than in the numeric check.
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", "--keep-backups", "-1"]);
+
+        Assert.True(result.HasError);
+        Assert.Contains("Missing value for --keep-backups", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void Should_Fail_When_KeepBackupsIsNotANumber()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", "--keep-backups", "many"]);
+
+        Assert.True(result.HasError);
+        Assert.Contains("keep-backups", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void Should_Fail_When_KeepBackupsSpecifiedTwice()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse(
+            [@"C:\game", @"C:\cloud", "--keep-backups", "3", "--keep-backups", "4"]);
+
+        Assert.True(result.HasError);
+        Assert.Contains("backup count was specified more than once", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void Should_Fail_When_KeepBackupsValueIsMissing()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", "--keep-backups"]);
+
+        Assert.True(result.HasError);
+        Assert.Contains("Missing value for --keep-backups", result.ErrorMessage);
     }
 }

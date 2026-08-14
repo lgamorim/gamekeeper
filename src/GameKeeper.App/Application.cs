@@ -76,14 +76,16 @@ public sealed class Application
         {
             Mode = parsed.Mode,
             PropagateDeletions = parsed.PropagateDeletions,
+            CreateBackups = parsed.CreateBackups,
+            KeepBackups = parsed.KeepBackups ?? SyncOptions.Default.KeepBackups,
         };
 
         // A successful parse always resolves both folders (guaranteed by
         // CommandLineParseResult.Success), so neither is null at this point.
-        return RunSync(parsed.GameFolder!, parsed.CloudFolder!, options);
+        return RunSync(parsed.GameFolder!, parsed.CloudFolder!, options, parsed.Force);
     }
 
-    private int RunSync(string gameFolder, string cloudFolder, SyncOptions options)
+    private int RunSync(string gameFolder, string cloudFolder, SyncOptions options, bool force)
     {
         if (!_fileSystem.Directory.Exists(gameFolder))
         {
@@ -97,8 +99,26 @@ public sealed class Application
 
         try
         {
+            // Propagating deletions is the only way this tool can destroy a save it was not
+            // asked to touch, so preview the run first and refuse if it looks like a folder
+            // went missing rather than the user tidying up. The preview changes nothing, so
+            // a refusal leaves no partial state behind.
+            if (options.PropagateDeletions && !options.DryRun && !force)
+            {
+                SyncResult preview = _synchronizer.Synchronize(
+                    gameFolder, cloudFolder, options with { DryRun = true });
+                if (IsMassDeletion(preview))
+                {
+                    WriteMassDeletionRefusal(preview, gameFolder, cloudFolder);
+                    return ErrorExitCode;
+                }
+            }
+
             SyncResult result = _synchronizer.Synchronize(gameFolder, cloudFolder, options);
             WriteSummary(gameFolder, cloudFolder, options.Mode, result);
+
+            // M5: when --dry-run arrives, a preview that would be refused for real should
+            // warn here, after the summary.
             return SuccessExitCode;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -108,6 +128,45 @@ public sealed class Application
                 + "cause is resolved (for example, after closing the game).");
             return ErrorExitCode;
         }
+    }
+
+    /// <summary>
+    /// Deletions must exceed this share of the tracked files before the guard engages, so an
+    /// ordinary tidy-up is never blocked.
+    /// </summary>
+    private const double MassDeleteShare = 0.5;
+
+    /// <summary>
+    /// Below this many deletions the guard stays quiet: on a folder holding two or three
+    /// saves, removing most of them is a plausible thing to have meant.
+    /// </summary>
+    private const int MassDeleteFloor = 3;
+
+    private static int DeletionsIn(SyncResult result) =>
+        result.DeletedFromFirst + result.DeletedFromSecond;
+
+    // Losing most of what GameKeeper is tracking is the signature of a folder that is not
+    // where it used to be, rather than of a deliberate clear-out.
+    private static bool IsMassDeletion(SyncResult result)
+    {
+        int deletions = DeletionsIn(result);
+        return deletions >= MassDeleteFloor && deletions > result.Files.Count * MassDeleteShare;
+    }
+
+    private void WriteMassDeletionRefusal(SyncResult preview, string gameFolder, string cloudFolder)
+    {
+        _error.WriteLine(
+            $"Refused: this run would delete {DeletionsIn(preview)} of the "
+            + $"{preview.Files.Count} files GameKeeper is tracking.");
+        _error.WriteLine();
+        _error.WriteLine("That usually means a folder is not where GameKeeper expects it - the game was");
+        _error.WriteLine("reinstalled, a drive letter changed, or your cloud folder has not finished");
+        _error.WriteLine("downloading. Nothing has been changed.");
+        _error.WriteLine();
+
+        // M5: once --dry-run exists, suggest a "Check with: ... --delete --dry-run" line
+        // above this one.
+        _error.WriteLine($"  Proceed:     GameKeeper \"{gameFolder}\" \"{cloudFolder}\" --delete --force");
     }
 
     private void WriteSummary(string gameFolder, string cloudFolder, SyncMode mode, SyncResult result)
@@ -201,12 +260,15 @@ public sealed class Application
         writer.WriteLine("                            up (game -> cloud), down (cloud -> game).");
         writer.WriteLine("      --delete              Propagate deletions (off by default; files are");
         writer.WriteLine("                            only added or updated unless this is set).");
+        writer.WriteLine("      --no-backup           Do not back up overwritten or deleted files.");
+        writer.WriteLine("      --keep-backups <n>    Backups to keep per file (default 10; 0 keeps all).");
+        writer.WriteLine("      --force               Allow a run that would delete most tracked files.");
         writer.WriteLine("      --version             Show the version, then exit.");
         writer.WriteLine("  -h, --help                Show this help.");
         writer.WriteLine();
         writer.WriteLine("The folders may be given positionally or by option, in any order.");
-        writer.WriteLine("The newer copy of each file wins. By default nothing is deleted: a file");
-        writer.WriteLine("missing on one side is copied back from the other, and even with --delete");
-        writer.WriteLine("an edited file always survives a deletion.");
+        writer.WriteLine("The newer copy of each file wins. By default nothing is deleted, an edited");
+        writer.WriteLine("file always survives a deletion, and anything overwritten in a conflict or");
+        writer.WriteLine("deleted is first copied into a '.gamekeeper-backups' folder.");
     }
 }

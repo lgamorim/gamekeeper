@@ -170,8 +170,9 @@ public sealed class ApplicationTests
 
         application.Run([GameRoot, CloudRoot, "--delete"]);
 
+        // A --delete run is previewed first by the mass-deletion guard, so match the real pass.
         _synchronizer.Received(1).Synchronize(
-            GameRoot, CloudRoot, Arg.Is<SyncOptions>(o => o.PropagateDeletions));
+            GameRoot, CloudRoot, Arg.Is<SyncOptions>(o => o.PropagateDeletions && !o.DryRun));
     }
 
     [Fact]
@@ -262,6 +263,43 @@ public sealed class ApplicationTests
         application.Run([GameRoot, CloudRoot]);
 
         Assert.DoesNotContain("save1.sav", _output.ToString());
+    }
+
+    [Fact]
+    public void Should_DisableBackups_When_NoBackupFlagIsGiven()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot, "--no-backup"]);
+
+        _synchronizer.Received(1).Synchronize(
+            GameRoot, CloudRoot, Arg.Is<SyncOptions>(o => !o.CreateBackups));
+    }
+
+    [Fact]
+    public void Should_ForwardTheBackupCount_When_KeepBackupsIsGiven()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot, "--keep-backups", "3"]);
+
+        _synchronizer.Received(1).Synchronize(
+            GameRoot, CloudRoot, Arg.Is<SyncOptions>(o => o.KeepBackups == 3));
+    }
+
+    [Fact]
+    public void Should_UseTheEngineDefault_When_KeepBackupsIsAbsent()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot]);
+
+        // Asserted against the engine default, never a literal, so the CLI can't drift.
+        _synchronizer.Received(1).Synchronize(
+            GameRoot, CloudRoot, Arg.Is<SyncOptions>(o => o.KeepBackups == SyncOptions.Default.KeepBackups));
     }
 
     [Fact]

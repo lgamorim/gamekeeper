@@ -22,6 +22,18 @@ public sealed record CommandLineParseResult
     /// <summary>Whether <c>--delete</c> was supplied.</summary>
     public bool PropagateDeletions { get; init; }
 
+    /// <summary>Whether backups are enabled (false when <c>--no-backup</c> was supplied).</summary>
+    public bool CreateBackups { get; init; } = true;
+
+    /// <summary>
+    /// Backups to keep per file, from <c>--keep-backups</c>, or <see langword="null"/> when the
+    /// option was not given so the engine default applies.
+    /// </summary>
+    public int? KeepBackups { get; init; }
+
+    /// <summary>Whether <c>--force</c> was supplied, overriding the mass-deletion guard.</summary>
+    public bool Force { get; init; }
+
     /// <summary>Whether a help flag was supplied.</summary>
     public bool HelpRequested { get; init; }
 

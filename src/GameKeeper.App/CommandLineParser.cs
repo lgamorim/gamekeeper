@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using GameKeeper.Core;
 
 namespace GameKeeper.App;
@@ -15,8 +16,11 @@ public static class CommandLineParser
     private static readonly string[] GameNames = ["--game", "-g"];
     private static readonly string[] CloudNames = ["--cloud", "-c"];
     private static readonly string[] ModeNames = ["--mode", "-m"];
+    private static readonly string[] KeepBackupsNames = ["--keep-backups"];
     private const string VersionFlag = "--version";
     private const string DeleteFlag = "--delete";
+    private const string NoBackupFlag = "--no-backup";
+    private const string ForceFlag = "--force";
 
     /// <summary>Parses the supplied command-line arguments.</summary>
     /// <param name="args">The raw command-line arguments.</param>
@@ -41,6 +45,9 @@ public static class CommandLineParser
         string? cloud = null;
         SyncMode? mode = null;
         bool propagateDeletions = false;
+        bool createBackups = true;
+        int? keepBackups = null;
+        bool force = false;
         var positionals = new List<string>();
 
         for (int i = 0; i < args.Length; i++)
@@ -100,6 +107,34 @@ public static class CommandLineParser
                 // A bare flag: repeating it is harmless, so no duplicate check.
                 propagateDeletions = true;
             }
+            else if (token.Equals(NoBackupFlag, StringComparison.OrdinalIgnoreCase))
+            {
+                createBackups = false;
+            }
+            else if (token.Equals(ForceFlag, StringComparison.OrdinalIgnoreCase))
+            {
+                force = true;
+            }
+            else if (TryMatchOption(token, KeepBackupsNames, out string? inlineKeep))
+            {
+                if (!TryResolveValue("--keep-backups", inlineKeep, args, ref i, out string? value, out string? error))
+                {
+                    return CommandLineParseResult.Failure(error);
+                }
+
+                if (keepBackups is not null)
+                {
+                    return CommandLineParseResult.Failure("The backup count was specified more than once.");
+                }
+
+                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedKeep))
+                {
+                    return CommandLineParseResult.Failure(
+                        $"Invalid value for --keep-backups: {value}. Expected a whole number, 0 to keep every backup.");
+                }
+
+                keepBackups = parsedKeep;
+            }
             else if (token.StartsWith('-'))
             {
                 return CommandLineParseResult.Failure($"Unknown option: {token}");
@@ -110,7 +145,14 @@ public static class CommandLineParser
             }
         }
 
-        return Resolve(game, cloud, mode, propagateDeletions, positionals);
+        // These options govern GameKeeper's own housekeeping rather than the folder pairing,
+        // so they are attached once here rather than threaded through the factory method.
+        return Resolve(game, cloud, mode, propagateDeletions, positionals) with
+        {
+            CreateBackups = createBackups,
+            KeepBackups = keepBackups,
+            Force = force,
+        };
     }
 
     private static CommandLineParseResult Resolve(

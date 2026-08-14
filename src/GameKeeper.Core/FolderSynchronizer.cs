@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO.Abstractions;
 
 namespace GameKeeper.Core;
@@ -10,13 +11,17 @@ namespace GameKeeper.Core;
 /// </summary>
 public sealed class FolderSynchronizer : IFolderSynchronizer
 {
-    // Reserved for the backup feature: the folder must be invisible to the sync itself even
-    // before backups exist, so no baseline ever records a path under it.
+    /// <summary>Folder (at each root) that holds backups; never itself synced.</summary>
     private const string BackupsDirectoryName = ".gamekeeper-backups";
 
     // Kept identical to the state store's staging suffix on purpose: everything the app writes
     // and later swaps into place shares one recognizable, ignorable extension.
     private const string StagingFileSuffix = ".gamekeeper-tmp";
+
+    // Backups are named '<file>.<yyyyMMddHHmmss>.bak'. Writing and pruning share these so the
+    // two cannot drift apart and leave old backups unrecognized (and so never reaped).
+    private const string BackupStampFormat = "yyyyMMddHHmmss";
+    private const string BackupFileExtension = ".bak";
 
     private static readonly StringComparer PathComparer = StringComparer.OrdinalIgnoreCase;
 
@@ -45,8 +50,13 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
         string firstRoot = _fileSystem.Path.GetFullPath(firstFolder);
         string secondRoot = _fileSystem.Path.GetFullPath(secondFolder);
 
-        _fileSystem.Directory.CreateDirectory(firstRoot);
-        _fileSystem.Directory.CreateDirectory(secondRoot);
+        // A dry run must not touch the disk at all; enumeration below tolerates a folder that
+        // does not exist yet, so a real run can still preview copies into a missing root.
+        if (!options.DryRun)
+        {
+            _fileSystem.Directory.CreateDirectory(firstRoot);
+            _fileSystem.Directory.CreateDirectory(secondRoot);
+        }
 
         if (PathComparer.Equals(firstRoot, secondRoot))
         {
@@ -85,8 +95,13 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
         }
 
         // Saved once, at the end: a run that fails mid-copy records nothing, so rerunning it
-        // is always safe.
-        _stateStore.Save(firstRoot, secondRoot, new SyncManifest(newBaseline));
+        // is always safe. A dry run reports what would happen but must not disturb the
+        // persisted baseline.
+        if (!options.DryRun)
+        {
+            _stateStore.Save(firstRoot, secondRoot, new SyncManifest(newBaseline));
+        }
+
         return new SyncResult(outcomes);
     }
 
@@ -105,31 +120,31 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
         return (firstChange, secondChange) switch
         {
             (Change.Created, Change.Absent) =>
-                CopyOutcome(first!.Value, relativePath, secondRoot, SyncAction.CopiedToSecond),
+                CopyOutcome(options, first!.Value, relativePath, secondRoot, SyncAction.CopiedToSecond),
             (Change.Absent, Change.Created) =>
-                CopyOutcome(second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst),
+                CopyOutcome(options, second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst),
             (Change.Created, Change.Created) or (Change.Modified, Change.Modified) =>
                 ReconcileBothPresent(relativePath, first!.Value, second!.Value, firstRoot, secondRoot, options),
             (Change.Modified, Change.Unchanged) =>
-                CopyOutcome(first!.Value, relativePath, secondRoot, SyncAction.CopiedToSecond),
+                CopyOutcome(options, first!.Value, relativePath, secondRoot, SyncAction.CopiedToSecond),
             (Change.Unchanged, Change.Modified) =>
-                CopyOutcome(second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst),
+                CopyOutcome(options, second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst),
 
             // Delete versus unchanged: propagate the deletion when asked to; otherwise the
             // sync stays additive and the survivor resurrects the file.
             (Change.Deleted, Change.Unchanged) => options.PropagateDeletions
-                ? DeleteOutcome(second!.Value.FullPath, SyncAction.DeletedFromSecond)
-                : CopyOutcome(second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst),
+                ? DeleteOutcome(second!.Value, relativePath, secondRoot, SyncAction.DeletedFromSecond, options)
+                : CopyOutcome(options, second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst),
             (Change.Unchanged, Change.Deleted) => options.PropagateDeletions
-                ? DeleteOutcome(first!.Value.FullPath, SyncAction.DeletedFromFirst)
-                : CopyOutcome(first!.Value, relativePath, secondRoot, SyncAction.CopiedToSecond),
+                ? DeleteOutcome(first!.Value, relativePath, firstRoot, SyncAction.DeletedFromFirst, options)
+                : CopyOutcome(options, first!.Value, relativePath, secondRoot, SyncAction.CopiedToSecond),
 
             // Edit versus delete: an edit is never lost to a delete, even with deletions on;
             // choosing the edit over the delete is a conflict resolution worth flagging.
             (Change.Modified, Change.Deleted) =>
-                CopyOutcome(first!.Value, relativePath, secondRoot, SyncAction.CopiedToSecond, conflict: true),
+                CopyOutcome(options, first!.Value, relativePath, secondRoot, SyncAction.CopiedToSecond, conflict: true),
             (Change.Deleted, Change.Modified) =>
-                CopyOutcome(second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst, conflict: true),
+                CopyOutcome(options, second!.Value, relativePath, firstRoot, SyncAction.CopiedToFirst, conflict: true),
 
             (Change.Unchanged, Change.Unchanged) => new Reconciliation(SyncAction.None, false, baseEntry),
 
@@ -156,10 +171,15 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
 
         // A genuine conflict: both copies exist and differ. The raw timestamps pick the
         // winner; an exact tie goes to the first (game) folder, since size says nothing
-        // about recency.
-        return first.LastWriteTimeUtc >= second.LastWriteTimeUtc
-            ? CopyOutcome(first, relativePath, secondRoot, SyncAction.CopiedToSecond, conflict: true)
-            : CopyOutcome(second, relativePath, firstRoot, SyncAction.CopiedToFirst, conflict: true);
+        // about recency. The loser is preserved in its own root's backups before the copy.
+        if (first.LastWriteTimeUtc >= second.LastWriteTimeUtc)
+        {
+            Backup(options, secondRoot, relativePath, second);
+            return CopyOutcome(options, first, relativePath, secondRoot, SyncAction.CopiedToSecond, conflict: true);
+        }
+
+        Backup(options, firstRoot, relativePath, first);
+        return CopyOutcome(options, second, relativePath, firstRoot, SyncAction.CopiedToFirst, conflict: true);
     }
 
     private Reconciliation ReconcileOneWay(
@@ -186,7 +206,7 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
             // pretend the pair is in sync.
             if (baseEntry is not null && destination is { } deletedDestination && options.PropagateDeletions)
             {
-                return DeleteOutcome(deletedDestination.FullPath, deleteAction);
+                return DeleteOutcome(deletedDestination, relativePath, destinationRoot, deleteAction, options);
             }
 
             return destination is not null
@@ -196,17 +216,22 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
 
         if (destination is not { } destinationFile)
         {
-            return CopyOutcome(sourceFile, relativePath, destinationRoot, copyAction);
+            return CopyOutcome(options, sourceFile, relativePath, destinationRoot, copyAction);
         }
 
         if (WithinTolerance(sourceFile.LastWriteTimeUtc, destinationFile.LastWriteTimeUtc, options.TimestampTolerance))
         {
             // Same moment: same size means in sync; a size mismatch means the copies
             // diverged. The source is authoritative in a one-way run, but the timestamps
-            // cannot justify the overwrite, so it is flagged as a conflict.
-            return sourceFile.Length == destinationFile.Length
-                ? new Reconciliation(SyncAction.None, false, StateOf(relativePath, sourceFile))
-                : CopyOutcome(sourceFile, relativePath, destinationRoot, copyAction, conflict: true);
+            // cannot justify the overwrite, so it is flagged as a conflict and the
+            // destination copy is backed up first.
+            if (sourceFile.Length == destinationFile.Length)
+            {
+                return new Reconciliation(SyncAction.None, false, StateOf(relativePath, sourceFile));
+            }
+
+            Backup(options, destinationRoot, relativePath, destinationFile);
+            return CopyOutcome(options, sourceFile, relativePath, destinationRoot, copyAction, conflict: true);
         }
 
         if (destinationFile.LastWriteTimeUtc >= sourceFile.LastWriteTimeUtc)
@@ -217,7 +242,7 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
             return new Reconciliation(SyncAction.Skipped, false, StateOf(relativePath, sourceFile));
         }
 
-        return CopyOutcome(sourceFile, relativePath, destinationRoot, copyAction);
+        return CopyOutcome(options, sourceFile, relativePath, destinationRoot, copyAction);
     }
 
     private static Change Classify(LiveFile? live, FileState? baseEntry, TimeSpan tolerance)
@@ -248,25 +273,123 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
     }
 
     private Reconciliation CopyOutcome(
+        SyncOptions options,
         LiveFile source,
         string relativePath,
         string destinationRoot,
         SyncAction action,
         bool conflict = false)
     {
-        CopyFile(source.FullPath, _fileSystem.Path.Combine(destinationRoot, relativePath));
+        if (!options.DryRun)
+        {
+            CopyFile(source.FullPath, _fileSystem.Path.Combine(destinationRoot, relativePath));
+        }
 
         // The copy preserves the source's timestamp, so its live state describes both sides.
         return new Reconciliation(action, conflict, StateOf(relativePath, source));
     }
 
-    private Reconciliation DeleteOutcome(string fullPath, SyncAction action)
+    private Reconciliation DeleteOutcome(
+        LiveFile victim,
+        string relativePath,
+        string victimRoot,
+        SyncAction action,
+        SyncOptions options)
     {
-        _fileSystem.File.Delete(fullPath);
+        Backup(options, victimRoot, relativePath, victim);
+        if (!options.DryRun)
+        {
+            _fileSystem.File.Delete(victim.FullPath);
+        }
 
         // A propagated deletion is never a conflict, and the path drops out of the baseline
         // because it no longer exists anywhere.
         return new Reconciliation(action, false, null);
+    }
+
+    // Called only where something that exists is about to be destroyed: the loser of a
+    // conflict overwrite, or the victim of a propagated deletion. Routine copies and
+    // edit-versus-delete conflicts destroy nothing the baseline cannot explain, so they must
+    // NOT back up - resist centralizing this into CopyOutcome.
+    private void Backup(SyncOptions options, string victimRoot, string relativePath, LiveFile victim)
+    {
+        if (options.DryRun || !options.CreateBackups || !_fileSystem.File.Exists(victim.FullPath))
+        {
+            return;
+        }
+
+        // The stamp is the victim's own last write time, so backups need no clock and a
+        // second backup of the same unchanged victim just overwrites the first.
+        string stamp = victim.LastWriteTimeUtc.ToString(BackupStampFormat, CultureInfo.InvariantCulture);
+        string backupPath = _fileSystem.Path.Combine(
+            victimRoot, BackupsDirectoryName, $"{relativePath}.{stamp}{BackupFileExtension}");
+        string? backupDirectory = _fileSystem.Path.GetDirectoryName(backupPath);
+        if (!string.IsNullOrEmpty(backupDirectory))
+        {
+            _fileSystem.Directory.CreateDirectory(backupDirectory);
+        }
+
+        // A plain copy, not the staged one: a torn backup of an already-doomed file is
+        // acceptable, and the backup tree is excluded from sync so a partial file there can
+        // never propagate.
+        _fileSystem.File.Copy(victim.FullPath, backupPath, overwrite: true);
+
+        if (!string.IsNullOrEmpty(backupDirectory))
+        {
+            PruneBackups(backupDirectory, _fileSystem.Path.GetFileName(relativePath), options.KeepBackups);
+        }
+    }
+
+    /// <summary>
+    /// Removes the oldest backups of one file once more than <paramref name="keep"/> exist.
+    /// </summary>
+    private void PruneBackups(string backupDirectory, string subject, int keep)
+    {
+        if (keep <= 0 || string.IsNullOrEmpty(subject))
+        {
+            return;
+        }
+
+        string[] stale =
+        [
+            .. _fileSystem.Directory
+                .EnumerateFiles(backupDirectory, $"{subject}.*{BackupFileExtension}")
+                .Select(path => (Path: path, Stamp: StampOf(_fileSystem.Path.GetFileName(path), subject)))
+                // A name whose stamp cannot be read is not one of ours, so it is not ours to
+                // delete - the backups folder is the user's to keep other things in.
+                .Where(candidate => candidate.Stamp is not null)
+                // yyyyMMddHHmmss sorts lexicographically in chronological order, so ordering
+                // newest-first needs no date parsing and no clock.
+                .OrderByDescending(candidate => candidate.Stamp, StringComparer.Ordinal)
+                .Skip(keep)
+                .Select(candidate => candidate.Path),
+        ];
+
+        foreach (string path in stale)
+        {
+            _fileSystem.File.Delete(path);
+        }
+    }
+
+    // Reads the timestamp out of '<subject>.<yyyyMMddHHmmss>.bak', or null if the name does
+    // not have exactly that shape.
+    private static string? StampOf(string fileName, string subject)
+    {
+        if (!fileName.StartsWith($"{subject}.", StringComparison.OrdinalIgnoreCase)
+            || !fileName.EndsWith(BackupFileExtension, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        int start = subject.Length + 1;
+        int length = fileName.Length - start - BackupFileExtension.Length;
+        if (length != BackupStampFormat.Length)
+        {
+            return null;
+        }
+
+        string stamp = fileName.Substring(start, length);
+        return stamp.All(char.IsAsciiDigit) ? stamp : null;
     }
 
     private void CopyFile(string sourcePath, string destinationPath)

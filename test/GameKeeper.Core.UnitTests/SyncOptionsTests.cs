@@ -18,4 +18,17 @@ public sealed class SyncOptionsTests
     {
         Assert.False(SyncOptions.Default.PropagateDeletions);
     }
+
+    [Fact]
+    public void Should_EnableBackupsKeepingTen_When_Defaulted()
+    {
+        Assert.True(SyncOptions.Default.CreateBackups);
+        Assert.Equal(10, SyncOptions.Default.KeepBackups);
+    }
+
+    [Fact]
+    public void Should_RunForReal_When_Defaulted()
+    {
+        Assert.False(SyncOptions.Default.DryRun);
+    }
 }
