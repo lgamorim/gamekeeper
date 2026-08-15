@@ -12,6 +12,20 @@ backed up first.
 > include/exclude filters, and a full dry-run preview. Profiles and a config
 > file arrive in the next milestone.
 
+## Why this exists
+
+Steam Cloud coverage is inconsistent: some games don't support it at all, and
+others sync only part of what matters — settings but not saves, or profiles
+but not progress. That leaves your progress trapped on whichever computer you
+played on. GameKeeper fills the gap: point it at the game's save folder and a
+folder your cloud client already syncs (OneDrive, Dropbox, Google Drive, a
+network share), and your saves follow you between machines.
+
+It has a second purpose: GameKeeper is a deliberate exercise in a structured,
+agentic coding workflow — a milestone [roadmap](ROADMAP.md), coding and
+workflow rules checked into the repo and enforced by the tooling, test-driven
+development, and one squash-merged feature branch per milestone.
+
 ## Build & test
 
 ```
