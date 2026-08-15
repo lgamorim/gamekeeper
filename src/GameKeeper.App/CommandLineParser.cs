@@ -17,6 +17,9 @@ public static class CommandLineParser
     private static readonly string[] CloudNames = ["--cloud", "-c"];
     private static readonly string[] ModeNames = ["--mode", "-m"];
     private static readonly string[] KeepBackupsNames = ["--keep-backups"];
+    private static readonly string[] IncludeNames = ["--include", "-i"];
+    private static readonly string[] ExcludeNames = ["--exclude", "-x"];
+    private static readonly string[] DryRunFlags = ["--dry-run", "-n"];
     private const string VersionFlag = "--version";
     private const string DeleteFlag = "--delete";
     private const string NoBackupFlag = "--no-backup";
@@ -48,6 +51,9 @@ public static class CommandLineParser
         bool createBackups = true;
         int? keepBackups = null;
         bool force = false;
+        bool dryRun = false;
+        var includePatterns = new List<string>();
+        var excludePatterns = new List<string>();
         var positionals = new List<string>();
 
         for (int i = 0; i < args.Length; i++)
@@ -115,6 +121,30 @@ public static class CommandLineParser
             {
                 force = true;
             }
+            else if (DryRunFlags.Contains(token, StringComparer.OrdinalIgnoreCase))
+            {
+                dryRun = true;
+            }
+            else if (TryMatchOption(token, IncludeNames, out string? inlineInclude))
+            {
+                if (!TryResolveValue("--include", inlineInclude, args, ref i, out string? value, out string? error))
+                {
+                    return CommandLineParseResult.Failure(error);
+                }
+
+                // Repeatable: every occurrence widens what is in scope.
+                includePatterns.Add(value);
+            }
+            else if (TryMatchOption(token, ExcludeNames, out string? inlineExclude))
+            {
+                if (!TryResolveValue("--exclude", inlineExclude, args, ref i, out string? value, out string? error))
+                {
+                    return CommandLineParseResult.Failure(error);
+                }
+
+                // Repeatable: every occurrence adds another pattern.
+                excludePatterns.Add(value);
+            }
             else if (TryMatchOption(token, KeepBackupsNames, out string? inlineKeep))
             {
                 if (!TryResolveValue("--keep-backups", inlineKeep, args, ref i, out string? value, out string? error))
@@ -145,13 +175,16 @@ public static class CommandLineParser
             }
         }
 
-        // These options govern GameKeeper's own housekeeping rather than the folder pairing,
-        // so they are attached once here rather than threaded through the factory method.
+        // These options ride alongside the folder pairing, so they are attached once here
+        // rather than threaded through the factory method.
         return Resolve(game, cloud, mode, propagateDeletions, positionals) with
         {
             CreateBackups = createBackups,
             KeepBackups = keepBackups,
             Force = force,
+            DryRun = dryRun,
+            IncludePatterns = includePatterns,
+            ExcludePatterns = excludePatterns,
         };
     }
 

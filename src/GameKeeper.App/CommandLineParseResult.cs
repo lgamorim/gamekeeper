@@ -34,6 +34,15 @@ public sealed record CommandLineParseResult
     /// <summary>Whether <c>--force</c> was supplied, overriding the mass-deletion guard.</summary>
     public bool Force { get; init; }
 
+    /// <summary>Whether <c>--dry-run</c> was supplied.</summary>
+    public bool DryRun { get; init; }
+
+    /// <summary>The glob patterns supplied via <c>--include</c>; empty means every file.</summary>
+    public IReadOnlyList<string> IncludePatterns { get; init; } = [];
+
+    /// <summary>The glob patterns supplied via <c>--exclude</c>; empty if none.</summary>
+    public IReadOnlyList<string> ExcludePatterns { get; init; } = [];
+
     /// <summary>Whether a help flag was supplied.</summary>
     public bool HelpRequested { get; init; }
 

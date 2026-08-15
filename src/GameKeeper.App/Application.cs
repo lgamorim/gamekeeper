@@ -78,6 +78,9 @@ public sealed class Application
             PropagateDeletions = parsed.PropagateDeletions,
             CreateBackups = parsed.CreateBackups,
             KeepBackups = parsed.KeepBackups ?? SyncOptions.Default.KeepBackups,
+            IncludePatterns = parsed.IncludePatterns,
+            ExcludePatterns = parsed.ExcludePatterns,
+            DryRun = parsed.DryRun,
         };
 
         // A successful parse always resolves both folders (guaranteed by
@@ -94,8 +97,12 @@ public sealed class Application
         }
 
         // The cloud folder may not exist yet on a brand-new machine; creating it is the
-        // natural first step of the sync rather than an error.
-        _fileSystem.Directory.CreateDirectory(cloudFolder);
+        // natural first step of the sync rather than an error. A dry run previews without
+        // touching the disk, so it is skipped there.
+        if (!options.DryRun)
+        {
+            _fileSystem.Directory.CreateDirectory(cloudFolder);
+        }
 
         try
         {
@@ -115,10 +122,15 @@ public sealed class Application
             }
 
             SyncResult result = _synchronizer.Synchronize(gameFolder, cloudFolder, options);
-            WriteSummary(gameFolder, cloudFolder, options.Mode, result);
+            WriteSummary(gameFolder, cloudFolder, options.Mode, result, options.DryRun);
 
-            // M5: when --dry-run arrives, a preview that would be refused for real should
-            // warn here, after the summary.
+            // A preview is harmless in itself, but it is exactly when the user wants to know
+            // that the real run would be turned away.
+            if (options.DryRun && options.PropagateDeletions && IsMassDeletion(result))
+            {
+                WriteMassDeletionWarning(result);
+            }
+
             return SuccessExitCode;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -163,15 +175,34 @@ public sealed class Application
         _error.WriteLine("reinstalled, a drive letter changed, or your cloud folder has not finished");
         _error.WriteLine("downloading. Nothing has been changed.");
         _error.WriteLine();
-
-        // M5: once --dry-run exists, suggest a "Check with: ... --delete --dry-run" line
-        // above this one.
+        _error.WriteLine($"  Check with:  GameKeeper \"{gameFolder}\" \"{cloudFolder}\" --delete --dry-run");
         _error.WriteLine($"  Proceed:     GameKeeper \"{gameFolder}\" \"{cloudFolder}\" --delete --force");
     }
 
-    private void WriteSummary(string gameFolder, string cloudFolder, SyncMode mode, SyncResult result)
+    private void WriteMassDeletionWarning(SyncResult preview)
     {
-        _output.WriteLine($"Synchronized '{gameFolder}' {DirectionArrow(mode)} '{cloudFolder}'.");
+        _output.WriteLine();
+        _output.WriteLine(
+            $"Warning: a real run would be refused, because {DeletionsIn(preview)} of the "
+            + $"{preview.Files.Count} tracked files would be deleted.");
+        _output.WriteLine("Re-run with --force if that is genuinely what you want.");
+    }
+
+    private void WriteSummary(
+        string gameFolder,
+        string cloudFolder,
+        SyncMode mode,
+        SyncResult result,
+        bool dryRun)
+    {
+        if (dryRun)
+        {
+            _output.WriteLine("Dry run: no files were copied, deleted, or backed up, and the sync record");
+            _output.WriteLine("was left unchanged. The counts below show what a real run would do.");
+        }
+
+        string verb = dryRun ? "Would synchronize" : "Synchronized";
+        _output.WriteLine($"{verb} '{gameFolder}' {DirectionArrow(mode)} '{cloudFolder}'.");
         _output.WriteLine($"  Copied to cloud: {result.CopiedToSecond}");
         _output.WriteLine($"  Copied to game:  {result.CopiedToFirst}");
         _output.WriteLine($"  Deleted from cloud: {result.DeletedFromSecond}");
@@ -185,21 +216,34 @@ public sealed class Application
             _output.WriteLine($"  Skipped (one-way): {result.Skipped}");
         }
 
-        WriteDetails(result);
+        WriteDetails(result, mode, dryRun);
     }
 
     /// <summary>
     /// Names the files behind the counts. Deletions and conflicts are always named: they are
     /// the outcomes a user may have to act on, and a count alone cannot be checked against
-    /// anything. Routine copies stay counts-only so those two outcomes are never buried.
+    /// anything. Routine copies are named only on a dry run, where seeing what a real run
+    /// would do is the entire point; naming them on every run would bury the two outcomes
+    /// that matter under a wall of ordinary ones.
     /// </summary>
-    private void WriteDetails(SyncResult result)
+    private void WriteDetails(SyncResult result, SyncMode mode, bool dryRun)
     {
-        // A conflict is also a copy; it is reported once, in its own section, where the
-        // winning side can be named too.
+        // A conflict is also a copy, so it is carved out of the copy sections and reported
+        // once, below, where the winning side can be named too.
+        if (dryRun)
+        {
+            WriteSection("Copied to cloud:", result, f => f.Action == SyncAction.CopiedToSecond && !f.Conflict);
+            WriteSection("Copied to game:", result, f => f.Action == SyncAction.CopiedToFirst && !f.Conflict);
+        }
+
         WriteSection("Deleted from cloud:", result, f => f.Action == SyncAction.DeletedFromSecond);
         WriteSection("Deleted from game:", result, f => f.Action == SyncAction.DeletedFromFirst);
         WriteConflicts(result);
+
+        if (dryRun && mode != SyncMode.Bidirectional)
+        {
+            WriteSection("Skipped (one-way):", result, f => f.Action == SyncAction.Skipped);
+        }
     }
 
     private void WriteSection(string heading, SyncResult result, Func<SyncedFile, bool> matches)
@@ -263,6 +307,11 @@ public sealed class Application
         writer.WriteLine("      --no-backup           Do not back up overwritten or deleted files.");
         writer.WriteLine("      --keep-backups <n>    Backups to keep per file (default 10; 0 keeps all).");
         writer.WriteLine("      --force               Allow a run that would delete most tracked files.");
+        writer.WriteLine("  -i, --include <glob>      Sync only paths matching the glob (repeatable).");
+        writer.WriteLine("                            Applies to files; folders follow --exclude.");
+        writer.WriteLine("  -x, --exclude <glob>      Skip paths matching the glob (repeatable), e.g.");
+        writer.WriteLine("                            --exclude *.log. '*' and '?' are wildcards.");
+        writer.WriteLine("  -n, --dry-run             Preview the actions without changing any files.");
         writer.WriteLine("      --version             Show the version, then exit.");
         writer.WriteLine("  -h, --help                Show this help.");
         writer.WriteLine();

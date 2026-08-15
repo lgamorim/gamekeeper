@@ -31,4 +31,12 @@ public sealed class SyncOptionsTests
     {
         Assert.False(SyncOptions.Default.DryRun);
     }
+
+    [Fact]
+    public void Should_MirrorEmptyDirectoriesWithNoFilters_When_Defaulted()
+    {
+        Assert.True(SyncOptions.Default.ReplicateEmptyDirectories);
+        Assert.Empty(SyncOptions.Default.IncludePatterns);
+        Assert.Empty(SyncOptions.Default.ExcludePatterns);
+    }
 }

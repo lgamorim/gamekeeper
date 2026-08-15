@@ -58,21 +58,23 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
             _fileSystem.Directory.CreateDirectory(secondRoot);
         }
 
+        var filter = new PathFilter(options.IncludePatterns, options.ExcludePatterns);
+
         if (PathComparer.Equals(firstRoot, secondRoot))
         {
             // Syncing a folder with itself is a no-op; recording state for it would only
             // pollute the baseline with a nonsensical pair.
-            return BuildSelfSyncResult(firstRoot);
+            return BuildSelfSyncResult(firstRoot, filter);
         }
 
         SyncManifest baseline = _stateStore.Load(firstRoot, secondRoot);
-        Dictionary<string, string> firstFiles = EnumerateRelativeFiles(firstRoot);
-        Dictionary<string, string> secondFiles = EnumerateRelativeFiles(secondRoot);
+        Dictionary<string, string> firstFiles = EnumerateRelativeFiles(firstRoot, filter);
+        Dictionary<string, string> secondFiles = EnumerateRelativeFiles(secondRoot, filter);
 
         var outcomes = new List<SyncedFile>();
         var newBaseline = new List<FileState>();
 
-        foreach (string relativePath in AllPaths(firstFiles, secondFiles, baseline))
+        foreach (string relativePath in AllPaths(firstFiles, secondFiles, baseline, filter))
         {
             LiveFile? first = LiveFileAt(firstFiles, relativePath);
             LiveFile? second = LiveFileAt(secondFiles, relativePath);
@@ -93,6 +95,8 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
                 outcomes.Add(new SyncedFile(relativePath, outcome.Action, outcome.Conflict));
             }
         }
+
+        ReplicateEmptyDirectories(firstRoot, secondRoot, options, filter);
 
         // Saved once, at the end: a run that fails mid-copy records nothing, so rerunning it
         // is always safe. A dry run reports what would happen but must not disturb the
@@ -433,14 +437,53 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
         }
     }
 
-    private SyncResult BuildSelfSyncResult(string root)
+    private void ReplicateEmptyDirectories(
+        string firstRoot,
+        string secondRoot,
+        SyncOptions options,
+        PathFilter filter)
     {
-        return new SyncResult(EnumerateRelativeFiles(root).Keys
+        // Directory replication mutates the destination, so it is skipped on a dry run too.
+        if (!options.ReplicateEmptyDirectories || options.DryRun)
+        {
+            return;
+        }
+
+        if (options.Mode is SyncMode.Bidirectional or SyncMode.FirstToSecond)
+        {
+            ReplicateDirectories(firstRoot, secondRoot, filter);
+        }
+
+        if (options.Mode is SyncMode.Bidirectional or SyncMode.SecondToFirst)
+        {
+            ReplicateDirectories(secondRoot, firstRoot, filter);
+        }
+    }
+
+    // Despite the name, this walks every directory: non-empty ones already exist on the other
+    // side (created by the copies), so recreating them is a cheap no-op and only the empty
+    // ones are actually new. Directories never enter the baseline or the results.
+    private void ReplicateDirectories(string sourceRoot, string destinationRoot, PathFilter filter)
+    {
+        foreach (string directory in _fileSystem.Directory.EnumerateDirectories(
+            sourceRoot, "*", SearchOption.AllDirectories))
+        {
+            string relativePath = _fileSystem.Path.GetRelativePath(sourceRoot, directory);
+            if (!IsExcludedDirectory(relativePath, filter))
+            {
+                _fileSystem.Directory.CreateDirectory(_fileSystem.Path.Combine(destinationRoot, relativePath));
+            }
+        }
+    }
+
+    private SyncResult BuildSelfSyncResult(string root, PathFilter filter)
+    {
+        return new SyncResult(EnumerateRelativeFiles(root, filter).Keys
             .OrderBy(path => path, PathComparer)
             .Select(path => new SyncedFile(path, SyncAction.None)));
     }
 
-    private Dictionary<string, string> EnumerateRelativeFiles(string root)
+    private Dictionary<string, string> EnumerateRelativeFiles(string root, PathFilter filter)
     {
         var map = new Dictionary<string, string>(PathComparer);
         if (!_fileSystem.Directory.Exists(root))
@@ -451,7 +494,7 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
         foreach (string fullPath in _fileSystem.Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
         {
             string relativePath = _fileSystem.Path.GetRelativePath(root, fullPath);
-            if (!IsExcluded(relativePath))
+            if (!IsExcludedFile(relativePath, filter))
             {
                 map[relativePath] = fullPath;
             }
@@ -463,15 +506,17 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
     private IEnumerable<string> AllPaths(
         Dictionary<string, string> firstFiles,
         Dictionary<string, string> secondFiles,
-        SyncManifest baseline)
+        SyncManifest baseline,
+        PathFilter filter)
     {
         var paths = new HashSet<string>(firstFiles.Keys, PathComparer);
         paths.UnionWith(secondFiles.Keys);
         foreach (FileState entry in baseline.Files)
         {
-            // Only the baseline can carry a path that is excluded today, so it is filtered
-            // again here.
-            if (!IsExcluded(entry.RelativePath))
+            // The live folders are already filtered; only the baseline can still carry a path
+            // that is excluded today, and such a path must not be reconciled - it would look
+            // deleted. Dropping it here also ages it out of the saved baseline.
+            if (!IsExcludedFile(entry.RelativePath, filter))
             {
                 paths.Add(entry.RelativePath);
             }
@@ -480,10 +525,25 @@ public sealed class FolderSynchronizer : IFolderSynchronizer
         return paths.OrderBy(path => path, PathComparer);
     }
 
-    private bool IsExcluded(string relativePath)
+    // A file is skipped if it is one of GameKeeper's own working files - a backup or a staging
+    // file left by an interrupted copy - or if the user's include/exclude patterns rule it out.
+    private bool IsExcludedFile(string relativePath, PathFilter filter)
     {
         return IsInBackups(relativePath)
-            || relativePath.EndsWith(StagingFileSuffix, StringComparison.OrdinalIgnoreCase);
+            || IsStagingFile(relativePath)
+            || !filter.AllowsFile(relativePath);
+    }
+
+    // Directories answer to excludes only: an include list names files (say '*.sav'), which no
+    // directory would ever match, so applying it here would filter every directory away.
+    private bool IsExcludedDirectory(string relativePath, PathFilter filter)
+    {
+        return IsInBackups(relativePath) || !filter.AllowsDirectory(relativePath);
+    }
+
+    private static bool IsStagingFile(string relativePath)
+    {
+        return relativePath.EndsWith(StagingFileSuffix, StringComparison.OrdinalIgnoreCase);
     }
 
     private bool IsInBackups(string relativePath)

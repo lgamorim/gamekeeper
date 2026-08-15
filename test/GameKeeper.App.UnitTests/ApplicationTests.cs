@@ -303,6 +303,134 @@ public sealed class ApplicationTests
     }
 
     [Fact]
+    public void Should_ForwardTheFilterPatterns_When_OptionsAreGiven()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        Application application = CreateApplication();
+
+        application.Run(
+            [GameRoot, CloudRoot, "--include", "*.sav", "--include", "*.cfg", "--exclude", "*.log"]);
+
+        _synchronizer.Received(1).Synchronize(
+            GameRoot,
+            CloudRoot,
+            Arg.Is<SyncOptions>(o =>
+                o.IncludePatterns.SequenceEqual(new[] { "*.sav", "*.cfg" })
+                && o.ExcludePatterns.SequenceEqual(new[] { "*.log" })));
+    }
+
+    [Fact]
+    public void Should_ForwardDryRun_When_FlagIsGiven()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        Application application = CreateApplication();
+
+        int exitCode = application.Run([GameRoot, CloudRoot, "--dry-run"]);
+
+        Assert.Equal(Application.SuccessExitCode, exitCode);
+        _synchronizer.Received(1).Synchronize(GameRoot, CloudRoot, Arg.Is<SyncOptions>(o => o.DryRun));
+    }
+
+    [Fact]
+    public void Should_NotCreateTheCloudFolder_When_RunIsDry()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        // CloudRoot is intentionally absent: a preview must not bring it into being.
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot, "--dry-run"]);
+
+        Assert.False(_fileSystem.Directory.Exists(CloudRoot));
+    }
+
+    [Fact]
+    public void Should_PrintTheBannerAndWouldSynchronize_When_RunIsDry()
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot, "--dry-run"]);
+
+        string output = _output.ToString();
+        Assert.Contains("Dry run:", output);
+        Assert.Contains($"Would synchronize '{GameRoot}' <-> '{CloudRoot}'.", output);
+        Assert.DoesNotContain("Synchronized '", output);
+    }
+
+    [Fact]
+    public void Should_NameEveryCopy_When_RunIsDry()
+    {
+        // Checking a run before committing to it is the whole point of a preview, and counts
+        // alone cannot be checked against anything.
+        _fileSystem.AddDirectory(GameRoot);
+        _synchronizer
+            .Synchronize(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<SyncOptions?>())
+            .Returns(new SyncResult(
+            [
+                new SyncedFile(@"slots\quick.sav", SyncAction.CopiedToSecond),
+                new SyncedFile("from-cloud.sav", SyncAction.CopiedToFirst),
+            ]));
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot, "--dry-run"]);
+
+        string output = _output.ToString();
+        Assert.Contains(@"slots\quick.sav", output);
+        Assert.Contains("from-cloud.sav", output);
+    }
+
+    [Fact]
+    public void Should_NameAConflictedCopyExactlyOnce_When_RunIsDry()
+    {
+        // A conflict is also a copy; naming it in both sections would inflate what the
+        // preview appears to be doing.
+        _fileSystem.AddDirectory(GameRoot);
+        _synchronizer
+            .Synchronize(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<SyncOptions?>())
+            .Returns(new SyncResult(
+                [new SyncedFile("autosave.sav", SyncAction.CopiedToSecond, Conflict: true)]));
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot, "--dry-run"]);
+
+        string output = _output.ToString();
+        Assert.Equal(1, output.Split("autosave.sav").Length - 1);
+        Assert.Contains("autosave.sav (kept the game copy)", output);
+    }
+
+    [Theory]
+    [InlineData("up")]
+    [InlineData("down")]
+    public void Should_NameSkippedFiles_When_DryRunIsOneWay(string mode)
+    {
+        _fileSystem.AddDirectory(GameRoot);
+        _synchronizer
+            .Synchronize(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<SyncOptions?>())
+            .Returns(new SyncResult([new SyncedFile("newer-there.sav", SyncAction.Skipped)]));
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot, "--mode", mode, "--dry-run"]);
+
+        Assert.Contains("newer-there.sav", _output.ToString());
+    }
+
+    [Fact]
+    public void Should_NotNameRoutineCopies_When_RunIsReal()
+    {
+        // The counts still report them, and --dry-run still lists them; a real run names only
+        // what the user may need to act on.
+        _fileSystem.AddDirectory(GameRoot);
+        _synchronizer
+            .Synchronize(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<SyncOptions?>())
+            .Returns(new SyncResult([new SyncedFile("save1.sav", SyncAction.CopiedToSecond)]));
+        Application application = CreateApplication();
+
+        application.Run([GameRoot, CloudRoot]);
+
+        Assert.DoesNotContain("save1.sav", _output.ToString());
+    }
+
+    [Fact]
     public void Should_CreateTheCloudFolder_When_ItDoesNotExist()
     {
         _fileSystem.AddDirectory(GameRoot);

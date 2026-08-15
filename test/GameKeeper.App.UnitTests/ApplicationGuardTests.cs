@@ -130,7 +130,7 @@ public sealed class ApplicationGuardTests
     }
 
     [Fact]
-    public void Should_ExplainTheLikelyCauseAndTheWayForward_When_Refusing()
+    public void Should_ExplainTheLikelyCauseAndBothWaysForward_When_Refusing()
     {
         SetupPreview(Preview(deletions: 50, untouched: 0));
         Application application = CreateApplication();
@@ -139,8 +139,26 @@ public sealed class ApplicationGuardTests
 
         string message = _error.ToString();
         Assert.Contains("Nothing has been changed", message);
+        Assert.Contains("--dry-run", message);
         Assert.Contains("--force", message);
         Assert.Equal(string.Empty, _output.ToString());
+    }
+
+    [Fact]
+    public void Should_WarnInsteadOfBlocking_When_ADryRunWouldBeRefused()
+    {
+        // A preview is already harmless; blocking it would hide the very information the user
+        // asked for. Warn that the real run would be refused.
+        _synchronizer
+            .Synchronize(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<SyncOptions?>())
+            .Returns(Preview(deletions: 50, untouched: 0));
+        Application application = CreateApplication();
+
+        int exitCode = application.Run([GameRoot, CloudRoot, "--delete", "--dry-run"]);
+
+        Assert.Equal(Application.SuccessExitCode, exitCode);
+        Assert.Contains("--force", _output.ToString());
+        Assert.Equal(string.Empty, _error.ToString());
     }
 
     private Application CreateApplication() => new(_synchronizer, _fileSystem, _output, _error);

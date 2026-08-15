@@ -452,6 +452,61 @@ public sealed class FolderSynchronizerTests
     }
 
     [Fact]
+    public void Should_ReplicateEmptyDirectories_When_OptionsAreDefaulted()
+    {
+        var fileSystem = new MockFileSystem();
+        fileSystem.AddDirectory(@"C:\game\screenshots");
+        fileSystem.AddDirectory(CloudRoot);
+        var synchronizer = CreateSynchronizer(fileSystem);
+
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        Assert.True(fileSystem.Directory.Exists(@"C:\cloud\screenshots"));
+    }
+
+    [Fact]
+    public void Should_NotCreateEmptyDirectories_When_ReplicationIsDisabled()
+    {
+        var fileSystem = new MockFileSystem();
+        fileSystem.AddDirectory(@"C:\game\screenshots");
+        fileSystem.AddDirectory(CloudRoot);
+        var synchronizer = CreateSynchronizer(fileSystem);
+
+        synchronizer.Synchronize(
+            GameRoot, CloudRoot, new SyncOptions { ReplicateEmptyDirectories = false });
+
+        Assert.False(fileSystem.Directory.Exists(@"C:\cloud\screenshots"));
+    }
+
+    [Fact]
+    public void Should_OnlyReplicateEmptyDirectoriesForward_When_ModeIsOneWay()
+    {
+        var fileSystem = new MockFileSystem();
+        fileSystem.AddDirectory(@"C:\game\game-only");
+        fileSystem.AddDirectory(@"C:\cloud\cloud-only");
+        var synchronizer = CreateSynchronizer(fileSystem);
+
+        synchronizer.Synchronize(
+            GameRoot, CloudRoot, new SyncOptions { Mode = SyncMode.FirstToSecond });
+
+        Assert.True(fileSystem.Directory.Exists(@"C:\cloud\game-only"));
+        Assert.False(fileSystem.Directory.Exists(@"C:\game\cloud-only"));
+    }
+
+    [Fact]
+    public void Should_NeverMirrorTheBackupsFolder_When_ReplicatingDirectories()
+    {
+        var fileSystem = new MockFileSystem();
+        fileSystem.AddDirectory(@"C:\game\.gamekeeper-backups\slots");
+        fileSystem.AddDirectory(CloudRoot);
+        var synchronizer = CreateSynchronizer(fileSystem);
+
+        synchronizer.Synchronize(GameRoot, CloudRoot);
+
+        Assert.False(fileSystem.Directory.Exists(@"C:\cloud\.gamekeeper-backups"));
+    }
+
+    [Fact]
     public void Should_NotFlagAConflict_When_OneWaySkipsANewerDestination()
     {
         // A skip is a refusal to act, not a resolution: nothing was chosen over anything.

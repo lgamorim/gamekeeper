@@ -377,4 +377,104 @@ public sealed class CommandLineParserTests
         Assert.True(result.HasError);
         Assert.Contains("Missing value for --keep-backups", result.ErrorMessage);
     }
+
+    [Fact]
+    public void Should_LeaveThePatternListsEmpty_When_NoFilterOptionsGiven()
+    {
+        // Empty means every file, not no files.
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud"]);
+
+        Assert.Empty(result.IncludePatterns);
+        Assert.Empty(result.ExcludePatterns);
+    }
+
+    [Theory]
+    [InlineData("--exclude")]
+    [InlineData("-x")]
+    public void Should_CollectTheExcludePattern_When_OptionGiven(string token)
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", token, "*.log"]);
+
+        Assert.False(result.HasError);
+        Assert.Equal(["*.log"], result.ExcludePatterns);
+    }
+
+    [Fact]
+    public void Should_CollectEveryExcludePattern_When_Repeated()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse(
+            [@"C:\game", @"C:\cloud", "--exclude", "*.log", "-x", "*.tmp", @"--exclude=cache\*"]);
+
+        Assert.False(result.HasError);
+        Assert.Equal(["*.log", "*.tmp", @"cache\*"], result.ExcludePatterns);
+    }
+
+    [Theory]
+    [InlineData("--exclude")]
+    [InlineData("--exclude=")]
+    public void Should_Fail_When_ExcludeValueIsMissing(params string[] excludeArgs)
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", .. excludeArgs]);
+
+        Assert.True(result.HasError);
+        Assert.Contains("Missing value for --exclude", result.ErrorMessage);
+    }
+
+    [Theory]
+    [InlineData("--include")]
+    [InlineData("-i")]
+    public void Should_CollectTheIncludePattern_When_OptionGiven(string token)
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", token, "*.sav"]);
+
+        Assert.False(result.HasError);
+        Assert.Equal(["*.sav"], result.IncludePatterns);
+    }
+
+    [Fact]
+    public void Should_CollectEveryIncludePattern_When_Repeated()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse(
+            [@"C:\game", @"C:\cloud", "--include", "*.sav", "--include", "*.cfg"]);
+
+        Assert.Equal(["*.sav", "*.cfg"], result.IncludePatterns);
+    }
+
+    [Fact]
+    public void Should_CaptureBothLists_When_IncludeAndExcludeAreCombined()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse(
+            [@"C:\game", @"C:\cloud", "--include", "*.sav", "--exclude", @"backup\*"]);
+
+        Assert.Equal(["*.sav"], result.IncludePatterns);
+        Assert.Equal([@"backup\*"], result.ExcludePatterns);
+    }
+
+    [Fact]
+    public void Should_Fail_When_IncludeValueIsMissing()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", "--include"]);
+
+        Assert.True(result.HasError);
+        Assert.Contains("Missing value for --include", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void Should_LeaveDryRunOff_When_FlagAbsent()
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud"]);
+
+        Assert.False(result.DryRun);
+    }
+
+    [Theory]
+    [InlineData("--dry-run")]
+    [InlineData("-n")]
+    public void Should_EnableDryRun_When_FlagGiven(string flag)
+    {
+        CommandLineParseResult result = CommandLineParser.Parse([@"C:\game", @"C:\cloud", flag]);
+
+        Assert.True(result.DryRun);
+        Assert.False(result.HasError);
+    }
 }

@@ -85,6 +85,19 @@ public sealed class FolderSynchronizerDryRunTests
     }
 
     [Fact]
+    public void Should_NotReplicateEmptyDirectories_When_RunIsDry()
+    {
+        var fileSystem = new MockFileSystem();
+        fileSystem.AddDirectory(@"C:\game\screenshots");
+        fileSystem.AddDirectory(CloudRoot);
+        var synchronizer = CreateSynchronizer(fileSystem);
+
+        synchronizer.Synchronize(GameRoot, CloudRoot, new SyncOptions { DryRun = true });
+
+        Assert.False(fileSystem.Directory.Exists(@"C:\cloud\screenshots"));
+    }
+
+    [Fact]
     public void Should_LeaveTheRealRunFreeToAct_When_ItFollowsADryRun()
     {
         var fileSystem = new MockFileSystem();
